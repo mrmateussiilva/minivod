@@ -639,6 +639,37 @@ def sql_timestamp_to_unix(value: str | None) -> str:
         return str(int(time.time()))
 
 
+def display_collection_name(name: object) -> str:
+    """Keep the scanner's root collection internal to the API."""
+    return "Outros" if str(name) == "[ROOT]" else str(name)
+
+
+def m3u_escape(value: object) -> str:
+    """Return an M3U attribute/display value that cannot break its line."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def sanitize_log_message(message: str) -> str:
+    """Remove Xtream credentials from query strings and stream URLs."""
+    message = re.sub(
+        r"(password=)[^&\s]+",
+        r"\1***",
+        message,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(/(?:movie|series)/[^/\s]+/)[^/\s]+/",
+        r"\1***/",
+        message,
+    )
+
+
 # =====================================================================
 # HTTP SERVER
 # =====================================================================
@@ -649,20 +680,7 @@ class Handler(BaseHTTPRequestHandler):
     _head_only = False
 
     def log_message(self, fmt: str, *args) -> None:
-        message = fmt % args
-
-        # Xtream usa credenciais na URL. Não grave senhas em texto puro no log.
-        message = re.sub(
-            r"(password=)[^&\\s]+",
-            r"\\1***",
-            message,
-            flags=re.IGNORECASE,
-        )
-        message = re.sub(
-            r"(/movie/[^/\\s]+/)[^/\\s]+/",
-            r"\\1***/",
-            message,
-        )
+        message = sanitize_log_message(fmt % args)
 
         print(
             f"{self.client_address[0]} "
@@ -868,39 +886,42 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         match = re.fullmatch(
-            r"/movie/([^/]+)/([^/]+)/(\d+)\.m3u8",
+            r"/(movie|series)/([^/]+)/([^/]+)/(\d+)\.m3u8",
             path,
         )
         if match:
-            self.handle_xtream_movie_playlist(
-                unquote(match.group(1)),
+            self.handle_xtream_playlist(
+                match.group(1),
                 unquote(match.group(2)),
-                int(match.group(3)),
+                unquote(match.group(3)),
+                int(match.group(4)),
             )
             return
 
         match = re.fullmatch(
-            r"/movie/([^/]+)/([^/]+)/(\d+)",
+            r"/(movie|series)/([^/]+)/([^/]+)/(\d+)",
             path,
         )
         if match:
-            self.handle_xtream_movie_playlist(
-                unquote(match.group(1)),
+            self.handle_xtream_playlist(
+                match.group(1),
                 unquote(match.group(2)),
-                int(match.group(3)),
+                unquote(match.group(3)),
+                int(match.group(4)),
             )
             return
 
         match = re.fullmatch(
-            r"/movie/([^/]+)/([^/]+)/(\d+)/(segment-\d{6}\.ts)",
+            r"/(movie|series)/([^/]+)/([^/]+)/(\d+)/(segment-\d{6}\.ts)",
             path,
         )
         if match:
-            self.handle_xtream_movie_segment(
-                unquote(match.group(1)),
+            self.handle_xtream_segment(
+                match.group(1),
                 unquote(match.group(2)),
-                int(match.group(3)),
-                match.group(4),
+                unquote(match.group(3)),
+                int(match.group(4)),
+                match.group(5),
             )
             return
 
@@ -921,6 +942,7 @@ class Handler(BaseHTTPRequestHandler):
                     "/xmltv.php",
                     "/compat",
                     "/movie/{username}/{password}/{id}.m3u8",
+                    "/series/{username}/{password}/{id}.m3u8",
                 ],
             },
         )
@@ -1428,7 +1450,8 @@ class Handler(BaseHTTPRequestHandler):
             "active_cons": "0",
             "created_at": str(user["created_at"]),
             "max_connections": str(user["max_connections"]),
-            "allowed_output_formats": ["m3u8", "ts"],
+            # O servidor entrega playlists HLS; não anuncie MPEG-TS contínuo.
+            "allowed_output_formats": ["m3u8"],
         }
 
     def handle_player_api(
@@ -1477,21 +1500,29 @@ class Handler(BaseHTTPRequestHandler):
             self.xtream_vod_info(vod_id)
             return
 
-        # Superfície vazia para players que sondam Live/Series/EPG.
-        if action in {
-            "get_live_categories",
-            "get_live_streams",
-            "get_series_categories",
-            "get_series",
-        }:
-            self.send_json(200, [])
+        if action == "get_series_categories":
+            self.xtream_series_categories()
+            return
+
+        if action == "get_series":
+            self.xtream_series(params.get("category_id", [None])[0])
             return
 
         if action == "get_series_info":
-            self.send_json(
-                200,
-                {"seasons": [], "info": {}, "episodes": {}},
-            )
+            raw_id = params.get("series_id", ["0"])[0]
+            try:
+                series_id = int(raw_id)
+            except ValueError:
+                series_id = 0
+            self.xtream_series_info(series_id)
+            return
+
+        # Superfície vazia para players que sondam Live/EPG.
+        if action in {
+            "get_live_categories",
+            "get_live_streams",
+        }:
+            self.send_json(200, [])
             return
 
         if action in {"get_short_epg", "get_simple_data_table"}:
@@ -1508,7 +1539,8 @@ class Handler(BaseHTTPRequestHandler):
                 FROM collections
                 WHERE active = 1
                   AND video_count > 0
-                ORDER BY name COLLATE NOCASE
+                ORDER BY CASE WHEN name = '[ROOT]' THEN 'Outros' ELSE name END
+                    COLLATE NOCASE
                 """
             ).fetchall()
 
@@ -1517,7 +1549,7 @@ class Handler(BaseHTTPRequestHandler):
             [
                 {
                     "category_id": str(row["id"]),
-                    "category_name": row["name"],
+                    "category_name": display_collection_name(row["name"]),
                     "parent_id": 0,
                 }
                 for row in rows
@@ -1574,6 +1606,141 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         self.send_json(200, payload)
+
+    def xtream_series_categories(self) -> None:
+        """Expose collections as series below one non-redundant category."""
+        self.send_json(
+            200,
+            [{"category_id": "1", "category_name": "Coleções", "parent_id": 0}],
+        )
+
+    def xtream_series(self, category_id: str | None) -> None:
+        # The sole Series category is optional in many Xtream clients.
+        if category_id not in (None, "", "0", "1"):
+            self.send_json(200, [])
+            return
+
+        with db_connect(readonly=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name
+                FROM collections
+                WHERE active = 1
+                  AND video_count > 0
+                ORDER BY CASE WHEN name = '[ROOT]' THEN 'Outros' ELSE name END
+                    COLLATE NOCASE
+                """
+            ).fetchall()
+
+        self.send_json(
+            200,
+            [
+                {
+                    "num": num,
+                    "name": display_collection_name(row["name"]),
+                    "series_id": int(row["id"]),
+                    "cover": "",
+                    "plot": "",
+                    "cast": "",
+                    "director": "",
+                    "genre": "",
+                    "releaseDate": "",
+                    "last_modified": "0",
+                    "rating": "0",
+                    "rating_5based": 0,
+                    "backdrop_path": [],
+                    "youtube_trailer": "",
+                    "episode_run_time": "0",
+                    "category_id": "1",
+                }
+                for num, row in enumerate(rows, start=1)
+            ],
+        )
+
+    def xtream_series_info(self, series_id: int) -> None:
+        empty = {"seasons": [], "info": {}, "episodes": {}}
+        if series_id <= 0:
+            self.send_json(200, empty)
+            return
+
+        with db_connect(readonly=True) as conn:
+            collection = conn.execute(
+                """
+                SELECT id, name
+                FROM collections
+                WHERE id = ?
+                  AND active = 1
+                  AND video_count > 0
+                """,
+                (series_id,),
+            ).fetchone()
+            if collection is None:
+                self.send_json(200, empty)
+                return
+
+            videos = conn.execute(
+                """
+                SELECT id, title, duration, created_at
+                FROM videos
+                WHERE collection_id = ?
+                  AND active = 1
+                ORDER BY id
+                """,
+                (series_id,),
+            ).fetchall()
+
+        name = display_collection_name(collection["name"])
+        episodes = [
+            {
+                "id": str(row["id"]),
+                "episode_num": number,
+                "title": row["title"],
+                "container_extension": "m3u8",
+                "info": {
+                    "duration_secs": int(row["duration"] or 0),
+                    "duration": format_duration(row["duration"]),
+                },
+                "custom_sid": None,
+                "added": sql_timestamp_to_unix(row["created_at"]),
+                "season": 1,
+                "direct_source": "",
+            }
+            for number, row in enumerate(videos, start=1)
+        ]
+
+        self.send_json(
+            200,
+            {
+                "seasons": [
+                    {
+                        "air_date": "",
+                        "episode_count": len(episodes),
+                        "id": int(collection["id"]),
+                        "name": "Season 1",
+                        "overview": "",
+                        "season_number": 1,
+                        "cover": "",
+                        "cover_big": "",
+                    }
+                ],
+                "info": {
+                    "name": name,
+                    "cover": "",
+                    "plot": "",
+                    "cast": "",
+                    "director": "",
+                    "genre": "",
+                    "releaseDate": "",
+                    "rating": "0",
+                    "rating_5based": 0,
+                    "backdrop_path": [],
+                    "youtube_trailer": "",
+                    "episode_run_time": "0",
+                    "category_id": "1",
+                },
+                "episodes": {"1": episodes},
+            },
+        )
 
     def xtream_vod_info(self, vod_id: int) -> None:
         video = get_video(vod_id)
@@ -1654,7 +1821,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         playlist_type = params.get("type", ["m3u_plus"])[0]
-        output = params.get("output", ["m3u8"])[0].lower()
+        requested_output = params.get("output", ["m3u8"])[0].lower()
+
+        # ``m3u8`` and ``hls`` select the existing HLS delivery.  ``ts`` and
+        # ``mpegts`` retain the historical HLS playlist behavior instead of
+        # falsely advertising a continuous MPEG-TS stream.
+        stream_extension = {
+            "": "m3u8",
+            "m3u8": "m3u8",
+            "hls": "m3u8",
+            "ts": "m3u8",
+            "mpegts": "m3u8",
+        }.get(requested_output, "m3u8")
 
         with db_connect(readonly=True) as conn:
             rows = conn.execute(
@@ -1667,7 +1845,8 @@ class Handler(BaseHTTPRequestHandler):
                 JOIN collections c ON c.id = v.collection_id
                 WHERE v.active = 1
                   AND c.active = 1
-                ORDER BY c.name COLLATE NOCASE, v.title COLLATE NOCASE
+                ORDER BY CASE WHEN c.name = '[ROOT]' THEN 'Outros' ELSE c.name END
+                    COLLATE NOCASE, v.title COLLATE NOCASE
                 """
             ).fetchall()
 
@@ -1678,8 +1857,8 @@ class Handler(BaseHTTPRequestHandler):
         lines = ["#EXTM3U"]
 
         for row in rows:
-            name = str(row["title"]).replace('"', "'")
-            group = str(row["collection_name"]).replace('"', "'")
+            name = m3u_escape(row["title"])
+            group = m3u_escape(display_collection_name(row["collection_name"]))
 
             if playlist_type == "m3u":
                 lines.append(f"#EXTINF:-1,{name}")
@@ -1693,12 +1872,14 @@ class Handler(BaseHTTPRequestHandler):
                     f'{name}'
                 )
 
-            # Mesmo se output=ts, este servidor entrega VOD como HLS:
-            # playlist .m3u8 + segmentos MPEG-TS .ts.
+            # No supported output alias changes the actual stream format:
+            # this server delivers an HLS playlist plus MPEG-TS segments.
+            # Keep the fallback HLS as well for legacy clients that pass an
+            # unknown output value.
             lines.append(
                 f"{base}/movie/"
                 f"{encoded_user}/{encoded_pass}/"
-                f"{row['id']}.m3u8"
+                f"{row['id']}.{stream_extension}"
             )
 
         self.send_text(
@@ -1731,7 +1912,7 @@ class Handler(BaseHTTPRequestHandler):
                 "xtream": True,
                 "vod": True,
                 "live": False,
-                "series": False,
+                "series": True,
                 "epg": False,
                 "endpoints": {
                     "player_api": "/player_api.php",
@@ -1741,8 +1922,9 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def handle_xtream_movie_playlist(
+    def handle_xtream_playlist(
         self,
+        stream_type: str,
         username: str,
         password: str,
         video_id: int,
@@ -1780,7 +1962,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if SEGMENT_RE.fullmatch(stripped):
                 rewritten.append(
-                    f"/movie/{encoded_user}/{encoded_pass}/"
+                    f"/{stream_type}/{encoded_user}/{encoded_pass}/"
                     f"{video_id}/{stripped}"
                 )
             else:
@@ -1792,8 +1974,9 @@ class Handler(BaseHTTPRequestHandler):
             "application/vnd.apple.mpegurl",
         )
 
-    def handle_xtream_movie_segment(
+    def handle_xtream_segment(
         self,
+        stream_type: str,
         username: str,
         password: str,
         video_id: int,

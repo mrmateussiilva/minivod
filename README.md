@@ -125,7 +125,28 @@ Username: cliente01
 Password: ********
 ```
 
-Live, Series e EPG real não são implementados. Para maior compatibilidade, as ações consultadas por players para esses recursos retornam respostas vazias válidas; o foco do MiniVOD continua sendo VOD. Também são aceitos os aliases `/player_api`, `/get`, `/xmltv` e `/movie/{username}/{password}/{id}`.
+O catálogo pode ser consumido de três formas, sem duplicar mídia ou dados:
+
+- **VOD Xtream:** cada coleção é uma categoria; `get_vod_streams` sem
+  `category_id` preserva o catálogo completo e, com `category_id`, retorna
+  apenas a coleção solicitada.
+- **Series Xtream:** a categoria única `Coleções` contém uma série por
+  coleção; seus vídeos aparecem como episódios da `Season 1`. Use
+  `get_series_categories`, `get_series` e
+  `get_series_info&series_id={collection_id}`.
+- **M3U Plus:** `/get.php?type=m3u_plus&output=m3u8` agrupa entradas por
+  `group-title` da coleção. `type=m3u` continua disponível na forma simples.
+
+As rotas de reprodução HLS aceitam tanto
+`/movie/{username}/{password}/{id}.m3u8` como
+`/series/{username}/{password}/{id}.m3u8`; ambas usam o mesmo cache e
+processo FFmpeg. Também são aceitos os aliases `/player_api`, `/get` e
+`/xmltv`.
+
+Live e EPG real não são implementados: as ações Live retornam listas vazias e
+o XMLTV é um documento vazio válido. O MiniVOD entrega HLS (`m3u8`/`hls`);
+`output=ts` e `output=mpegts` mantêm a playlist HLS legada, pois não há
+stream MPEG-TS contínuo nesta implementação.
 
 ## Cloudflare Tunnel
 
