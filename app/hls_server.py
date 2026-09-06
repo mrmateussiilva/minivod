@@ -1248,7 +1248,19 @@ body{{background:#111;color:#ddd;font:14px sans-serif;max-width:1200px;margin:24
             videos = conn.execute("""SELECT id,title,filename,duration,width,height,video_codec,audio_codec,size_bytes,active FROM videos WHERE collection_id = ? AND active = 1 ORDER BY filename COLLATE NOCASE LIMIT ? OFFSET ?""", (collection_id, per_page, (page - 1) * per_page)).fetchall()
         cover = self.collection_cover_url(collection_id, collection["cover_path"])
         preview = f'<img class="cover" src="/covers/{collection_id}" alt="">' if cover else '<div class="empty">Sem capa</div>'
-        rows = "".join(f'<tr><td>#{row["id"]}</td><td>{html.escape(str(row["title"]))}<br><span class="muted">{html.escape(str(row["filename"]))}</span></td><td>{format_duration(row["duration"])}</td><td>{html.escape(f"{row["width"] or "?"}x{row["height"] or "?"}")}</td><td>{html.escape(f"{row["video_codec"] or "?"} / {row["audio_codec"] or "?"}")}</td><td>{format_bytes(int(row["size_bytes"] or 0))}</td><td><a href="/admin/videos/{row["id"]}">Detalhes</a> · <a href="/vod/{row["id"]}/index.m3u8">Reproduzir</a></td></tr>' for row in videos) or '<tr><td colspan="7">Nenhum vídeo nesta coleção.</td></tr>'
+        video_rows = []
+        for row in videos:
+            resolution = f"{row['width'] or '?'}x{row['height'] or '?'}"
+            codecs = f"{row['video_codec'] or '?'} / {row['audio_codec'] or '?'}"
+            video_rows.append(
+                f'<tr><td>#{row["id"]}</td><td>{html.escape(str(row["title"]))}'
+                f'<br><span class="muted">{html.escape(str(row["filename"]))}</span></td>'
+                f'<td>{format_duration(row["duration"])}</td><td>{html.escape(resolution)}</td>'
+                f'<td>{html.escape(codecs)}</td><td>{format_bytes(int(row["size_bytes"] or 0))}</td>'
+                f'<td><a href="/admin/videos/{row["id"]}">Detalhes</a> · '
+                f'<a href="/vod/{row["id"]}/index.m3u8">Reproduzir</a></td></tr>'
+            )
+        rows = "".join(video_rows) or '<tr><td colspan="7">Nenhum vídeo nesta coleção.</td></tr>'
         base = f"/admin/collections/{collection_id}?per_page={per_page}&page="
         content = f'<p><a href="/admin/collections">← Coleções</a></p><div class="card">{preview}<h3>{html.escape(display_collection_name(collection["name"]))}</h3><p>{total} vídeos<br><code>{html.escape(str(collection_root(collection) or ""))}</code></p><p><a href="/admin/collections/{collection_id}/covers">Alterar capa</a> <form method="post" action="/admin/collections/{collection_id}/cover-auto"><button>Selecionar automaticamente</button></form><form method="post" action="/admin/collections/{collection_id}/cover-remove"><button>Remover capa</button></form></p></div><table><thead><tr><th>ID</th><th>Vídeo</th><th>Duração</th><th>Resolução</th><th>Codec</th><th>Tamanho</th><th>Ação</th></tr></thead><tbody>{rows}</tbody></table>{self.admin_pagination(page, total, per_page, base)}'
         self.send_admin_html(200, self.render_admin_page(display_collection_name(collection["name"]), content))
