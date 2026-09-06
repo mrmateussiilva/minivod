@@ -24,6 +24,8 @@ services:
       - ${MINIVOD_ADMIN_USER:-}
       - --admin-password
       - ${MINIVOD_ADMIN_PASSWORD:-}
+      - --max-ffmpeg-jobs
+      - ${MINIVOD_MAX_FFMPEG_JOBS:-2}
     healthcheck:
       test:
         - CMD

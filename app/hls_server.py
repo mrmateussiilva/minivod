@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from collections.abc import Iterator
+from contextlib import contextmanager
 import getpass
 import hashlib
 import hmac
@@ -46,6 +48,7 @@ PASSWORD_ITERATIONS = 240_000
 
 generation_lock = threading.Lock()
 generation_processes: dict[int, subprocess.Popen] = {}
+ffmpeg_semaphore = threading.BoundedSemaphore(2)
 
 
 @dataclass(slots=True)
@@ -57,6 +60,7 @@ class Config:
     segment_time: int
     playlist_wait: int
     transcode_incompatible: bool
+    max_ffmpeg_jobs: int
     base_url: str | None
     admin_user: str | None
     admin_password: str | None
@@ -69,22 +73,36 @@ CONFIG: Config
 # DATABASE
 # =====================================================================
 
-def db_connect(readonly: bool = False) -> sqlite3.Connection:
-    conn = sqlite3.connect(CONFIG.db, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-
-    if readonly:
-        conn.execute("PRAGMA query_only=ON")
-
-    return conn
-
-
-def raw_db_connect(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def open_db(
+    db_path: Path,
+    *,
+    readonly: bool = False,
+) -> Iterator[sqlite3.Connection]:
+    """Open one SQLite connection per operation and always close it."""
     conn = sqlite3.connect(db_path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        if readonly:
+            conn.execute("PRAGMA query_only=ON")
+        yield conn
+        if not readonly:
+            conn.commit()
+    except Exception:
+        if not readonly:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def db_connect(readonly: bool = False):
+    return open_db(CONFIG.db, readonly=readonly)
+
+
+def raw_db_connect(db_path: Path):
+    return open_db(db_path)
 
 
 def init_xtream_schema(conn: sqlite3.Connection) -> None:
@@ -105,6 +123,9 @@ def init_xtream_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_xtream_users_username
             ON xtream_users(username);
+
+        CREATE INDEX IF NOT EXISTS idx_videos_collection_active
+            ON videos(collection_id, active);
         """
     )
     conn.commit()
@@ -616,6 +637,7 @@ def watch_process(
             current = generation_processes.get(video_id)
             if current is process:
                 generation_processes.pop(video_id, None)
+        ffmpeg_semaphore.release()
 
 
 def ensure_generation(video: sqlite3.Row) -> tuple[bool, str]:
@@ -648,18 +670,29 @@ def ensure_generation(video: sqlite3.Row) -> tuple[bool, str]:
         if running is not None and running.poll() is None:
             return True, "gerando"
 
+        # Do not queue unbounded HTTP request threads behind transcoding. A
+        # client can retry the playlist shortly; cached content is unaffected.
+        if not ffmpeg_semaphore.acquire(blocking=False):
+            return False, "limite global de gerações HLS atingido; tente novamente"
+
         write_manifest(video)
 
         log_file = directory / LOG_NAME
-        log_handle = log_file.open("ab", buffering=0)
-
-        process = subprocess.Popen(
-            ffmpeg_command(video),
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        log_handle = None
+        try:
+            log_handle = log_file.open("ab", buffering=0)
+            process = subprocess.Popen(
+                ffmpeg_command(video),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception:
+            if log_handle is not None:
+                log_handle.close()
+            ffmpeg_semaphore.release()
+            raise
 
         generation_processes[video_id] = process
 
@@ -1416,6 +1449,7 @@ body{{background:#111;color:#ddd;font:14px sans-serif;max-width:1200px;margin:24
         root = collection_root(collection)
         candidates = find_collection_cover_candidates(root) if root else []
         page, per_page = self.page_args(query)
+        total = len(candidates)
         candidates = candidates[(page - 1) * per_page:page * per_page]
         name = html.escape(display_collection_name(collection["name"]))
         cards = []
@@ -1423,7 +1457,6 @@ body{{background:#111;color:#ddd;font:14px sans-serif;max-width:1200px;margin:24
             relative = candidate.relative_to(root)
             escaped = html.escape(str(relative))
             cards.append(f'<article class="card"><img class="cover" src="/admin/collections/{collection_id}/cover-preview?path={quote(str(relative))}" alt=""><p>{escaped}</p><form method="post" action="/admin/collections/{collection_id}/cover"><input type="hidden" name="cover" value="{escaped}"><button>Selecionar</button></form></article>')
-        total = len(find_collection_cover_candidates(root)) if root else 0
         content = f'<p><a href="/admin/collections/{collection_id}">← Coleção</a></p><div class="grid covers">{"".join(cards) or "Nenhuma imagem candidata."}</div>{self.admin_pagination(page, total, per_page, f"/admin/collections/{collection_id}/covers?per_page={per_page}&page=")}'
         self.send_admin_html(200, self.render_admin_page(f"Capas: {name}", content))
 
@@ -2391,7 +2424,7 @@ body{{background:#111;color:#ddd;font:14px sans-serif;max-width:1200px;margin:24
 # =====================================================================
 
 def main() -> None:
-    global CONFIG
+    global CONFIG, ffmpeg_semaphore
 
     parser = argparse.ArgumentParser(
         description=(
@@ -2458,6 +2491,13 @@ def main() -> None:
         type=int,
         default=30,
         help="segundos para esperar a playlist inicial",
+    )
+
+    parser.add_argument(
+        "--max-ffmpeg-jobs",
+        type=int,
+        default=int(os.environ.get("MINIVOD_MAX_FFMPEG_JOBS", "2")),
+        help="máximo global de gerações HLS simultâneas (padrão: 2)",
     )
 
     parser.add_argument(
@@ -2554,10 +2594,12 @@ def main() -> None:
         segment_time=max(2, args.segment_time),
         playlist_wait=max(1, args.playlist_wait),
         transcode_incompatible=not args.copy_only,
+        max_ffmpeg_jobs=max(1, args.max_ffmpeg_jobs),
         base_url=args.base_url,
         admin_user=args.admin_user or None,
         admin_password=args.admin_password or None,
     )
+    ffmpeg_semaphore = threading.BoundedSemaphore(CONFIG.max_ffmpeg_jobs)
 
     # Cria schema de usuários antes de entrar em modo leitura.
     with raw_db_connect(db) as conn:
@@ -2576,6 +2618,7 @@ def main() -> None:
     print(f"HTTP:         http://{CONFIG.host}:{CONFIG.port}")
     print(f"Base URL:     {CONFIG.base_url or '(Host da requisição)'}")
     print(f"Segmentos:    {CONFIG.segment_time}s")
+    print(f"FFmpeg jobs:  {CONFIG.max_ffmpeg_jobs}")
     print(
         "Compat:       "
         + (

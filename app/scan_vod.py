@@ -105,6 +105,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_videos_collection
             ON videos(collection_id);
 
+        CREATE INDEX IF NOT EXISTS idx_videos_collection_active
+            ON videos(collection_id, active);
+
         CREATE INDEX IF NOT EXISTS idx_videos_active
             ON videos(active);
 

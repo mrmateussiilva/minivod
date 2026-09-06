@@ -20,6 +20,7 @@ args=(
   --port "$MINIVOD_PORT"
   --segment-time "$MINIVOD_SEGMENT_TIME"
   --playlist-wait "$MINIVOD_PLAYLIST_WAIT"
+  --max-ffmpeg-jobs "${MINIVOD_MAX_FFMPEG_JOBS:-2}"
 )
 
 if [[ -n "${MINIVOD_BASE_URL:-}" ]]; then

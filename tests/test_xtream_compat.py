@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import base64
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import sqlite3
 import sys
@@ -50,7 +52,7 @@ class XtreamCompatibilityTests(unittest.TestCase):
         cls.cover_file = cls.bella_dir / "cover.jpg"
         cls.cover_file.write_bytes(b"test-jpeg")
 
-        with sqlite3.connect(cls.db) as conn:
+        with closing(sqlite3.connect(cls.db)) as conn:
             scanner.init_db(conn)
             hls.init_xtream_schema(conn)
             conn.execute(
@@ -103,6 +105,7 @@ class XtreamCompatibilityTests(unittest.TestCase):
             segment_time=6,
             playlist_wait=1,
             transcode_incompatible=False,
+            max_ffmpeg_jobs=2,
             base_url="https://vod.example.test",
             admin_user=None,
             admin_password=None,
@@ -255,6 +258,34 @@ class XtreamCompatibilityTests(unittest.TestCase):
         self.assertIn("/series/user/***/1.m3u8", message)
         self.assertIn("password=***", message)
 
+    def test_concurrent_health_requests(self) -> None:
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            responses = list(executor.map(lambda _: self.request("/health"), range(20)))
+        self.assertTrue(all(status == 200 for status, _ in responses))
+
+    def test_concurrent_cached_playlist_requests(self) -> None:
+        source = Path(str(self.db.parent / "1.mp4"))
+        source.write_bytes(b"x")
+        video = hls.get_video(1)
+        self.assertIsNotNone(video)
+        directory = hls.cache_dir(1)
+        directory.mkdir(parents=True, exist_ok=True)
+        hls.write_manifest(video)
+        hls.playlist_path(1).write_text(
+            "#EXTM3U\n#EXT-X-ENDLIST\n", encoding="utf-8"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                responses = list(
+                    executor.map(
+                        lambda _: self.request("/vod/1/index.m3u8"), range(20)
+                    )
+                )
+            self.assertTrue(all(status == 200 for status, _ in responses))
+        finally:
+            hls.invalidate_cache(1)
+            source.unlink(missing_ok=True)
+
     def test_cover_selection_priority_and_stability(self) -> None:
         photos = self.bella_dir / "Fotos"
         photos.mkdir()
@@ -265,7 +296,7 @@ class XtreamCompatibilityTests(unittest.TestCase):
 
         self.cover_file.unlink()
         self.assertEqual(cover_support.find_collection_cover(self.bella_dir), fallback)
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("UPDATE collections SET cover_path = ? WHERE id = 1", (str(fallback),))
             self.assertFalse(scanner.ensure_collection_cover(conn, 1, self.bella_dir))
@@ -277,9 +308,16 @@ class XtreamCompatibilityTests(unittest.TestCase):
                 conn.execute("SELECT cover_path FROM collections WHERE id = 1").fetchone()[0],
                 str(replacement),
             )
+        self.cover_file.write_bytes(b"test-jpeg")
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute(
+                "UPDATE collections SET cover_path = ? WHERE id = 1",
+                (str(self.cover_file),),
+            )
+            conn.commit()
 
     def test_cover_route_and_path_traversal_protection(self) -> None:
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn:
             current = conn.execute("SELECT cover_path FROM collections WHERE id = 1").fetchone()[0]
             if not current:
                 conn.execute("UPDATE collections SET cover_path = ? WHERE id = 1", (str(self.cover_file),))

@@ -65,9 +65,20 @@ MINIVOD_BASE_URL=http://192.168.15.7:8079
 MINIVOD_ADMIN_USER=admin
 MINIVOD_ADMIN_PASSWORD=uma-senha-forte
 SCAN_INTERVAL=300
+MINIVOD_MAX_FFMPEG_JOBS=2
 ```
 
 Dentro dos containers, `MINIVOD_DATA` é montado em `/data` (`/data/iptv` e `/data/vod.db`) e `MINIVOD_CACHE` em `/cache`. O servidor escuta em `0.0.0.0:8079`; a porta publicada no host é controlada por `MINIVOD_PORT`.
+
+`MINIVOD_MAX_FFMPEG_JOBS` limita as gerações HLS simultâneas. O padrão `2`
+protege CPU e RAM quando vários vídeos ainda não estão em cache; playlists de
+vídeos já cacheados não entram nesse limite.
+
+Para medir endpoints baratos em uma instância local sem iniciar transcodes:
+
+```bash
+python3 scripts/benchmark.py --base-url http://127.0.0.1:8079 --username cliente01
+```
 
 ## Painel administrativo
 
