@@ -1,0 +1,48 @@
+services:
+  minivod:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${MINIVOD_PORT:-8079}:8079"
+    volumes:
+      - ${MINIVOD_DATA}:/data
+      - ${MINIVOD_CACHE}:/cache
+    command:
+      - python3
+      - /app/hls_server.py
+      - --db
+      - /data/vod.db
+      - --cache
+      - /cache
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8079"
+      - --base-url
+      - ${MINIVOD_BASE_URL}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8079/health').read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  scanner:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ${MINIVOD_DATA}:/data
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        while true; do
+          python3 /app/scan_vod.py /data/iptv --db /data/vod.db;
+          sleep "$${SCAN_INTERVAL:-300}";
+        done
+    environment:
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-300}

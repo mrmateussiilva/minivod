@@ -1,159 +1,109 @@
 # MiniVOD
 
-Servidor VOD mínimo em Python para biblioteca local, com:
+Servidor VOD mínimo em Python, SQLite e FFmpeg, com scanner incremental, HLS sob demanda, cache local e API Xtream básica.
 
-- scanner incremental para SQLite;
-- metadados via `ffprobe`;
-- HLS sob demanda;
-- segmentos MPEG-TS (`.ts`);
-- cache local;
-- API VOD simples;
-- compatibilidade Xtream básica;
-- usuários locais;
-- deploy via systemd;
-- pronto para ficar atrás de Cloudflare Tunnel.
+## Deploy com Docker Compose
 
-## Estrutura
+O Compose cria somente dois containers: `minivod` (HTTP/HLS/Xtream) e `scanner` (indexação incremental). Dados, mídia e cache são bind mounts do host e não são removidos por `docker compose down` nem por rebuilds.
+
+Requisitos: Docker com Docker Compose e os diretórios abaixo no host:
 
 ```text
-app/
-  hls_server.py
-  scan_vod.py
-config/
-  minivod.env.example
-cloudflared/
-  config.yml.example
-systemd/
-  minivod.service
-  minivod-scan.service
-  minivod-scan.timer
-scripts/
-  install.sh
-  run-server.sh
-  scan.sh
-  user.sh
+/home/server/downloads/
+├── iptv/
+└── vod.db
+
+/home/server/vod-cache/
 ```
 
-## Desenvolvimento / teste local
-
-O projeto usa apenas Python 3 padrão, SQLite e FFmpeg.
+Configure e suba:
 
 ```bash
-sudo apt install python3 ffmpeg sqlite3
+cp .env.example .env
+nano .env
+
+docker compose build
+docker compose up -d
 ```
 
-O banco `vod.db`, mídia e cache **não entram no Git**.
-
-## Instalação no Debian
-
-Clone o repositório e rode:
+Status e logs:
 
 ```bash
-sudo ./scripts/install.sh
+docker compose ps
+docker compose logs -f minivod
+docker compose logs -f scanner
 ```
 
-Edite:
+Teste local:
 
 ```bash
-sudo nano /etc/minivod/minivod.env
+curl http://localhost:8079/health
 ```
 
-Exemplo:
+Parar os containers sem apagar mídia, SQLite ou cache:
+
+```bash
+docker compose down
+```
+
+Atualizar a aplicação:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+## Configuração
+
+`.env` define os bind mounts, a porta publicada, URL base retornada pela API e o intervalo do scanner:
 
 ```env
-MINIVOD_DB=/home/server/downloads/vod.db
-MINIVOD_MEDIA=/home/server/downloads/iptv
+MINIVOD_DATA=/home/server/downloads
 MINIVOD_CACHE=/home/server/vod-cache
-MINIVOD_HOST=127.0.0.1
 MINIVOD_PORT=8079
-MINIVOD_BASE_URL=https://vod.seudominio.com
-MINIVOD_SEGMENT_TIME=6
-MINIVOD_PLAYLIST_WAIT=30
-MINIVOD_COPY_ONLY=0
+MINIVOD_BASE_URL=http://192.168.15.7:8079
+SCAN_INTERVAL=300
 ```
 
-Suba o servidor:
-
-```bash
-sudo systemctl enable --now minivod
-sudo systemctl enable --now minivod-scan.timer
-```
-
-Logs:
-
-```bash
-journalctl -u minivod -f
-```
-
-Status:
-
-```bash
-curl http://127.0.0.1:8079/health
-```
+Dentro dos containers, `MINIVOD_DATA` é montado em `/data` (`/data/iptv` e `/data/vod.db`) e `MINIVOD_CACHE` em `/cache`. O servidor escuta em `0.0.0.0:8079`; a porta publicada no host é controlada por `MINIVOD_PORT`.
 
 ## Usuários Xtream
 
-Criar:
+Criar usuário:
 
 ```bash
-sudo /opt/minivod/scripts/user.sh create cliente01
+docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --create-user cliente01
 ```
 
-Listar:
+Listar usuários:
 
 ```bash
-sudo /opt/minivod/scripts/user.sh list
+docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --list-users
 ```
 
-Desabilitar:
+Habilitar ou desabilitar:
 
 ```bash
-sudo /opt/minivod/scripts/user.sh disable cliente01
+docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --enable-user cliente01
+docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --disable-user cliente01
 ```
 
 ## Cloudflare Tunnel
 
-O MiniVOD deve continuar ouvindo apenas em:
+Não há `cloudflared` no Compose. Depois de confirmar que o MiniVOD responde em `http://IP_DO_SERVIDOR:8079`, configure no dashboard do Cloudflare Tunnel um **Public Hostname** para `vod.meudominio.com` com serviço HTTP apontando para:
 
 ```text
-127.0.0.1:8079
+http://localhost:8079
 ```
 
-Use `cloudflared/config.yml.example` como referência. O hostname público deve apontar para:
-
-```text
-http://127.0.0.1:8079
-```
-
-E `MINIVOD_BASE_URL` deve ser o domínio HTTPS público, por exemplo:
+Depois atualize:
 
 ```env
-MINIVOD_BASE_URL=https://vod.seudominio.com
+MINIVOD_BASE_URL=https://vod.meudominio.com
 ```
 
-## Xtream
-
-No player:
-
-```text
-Server:   https://vod.seudominio.com
-Username: cliente01
-Password: ********
-```
-
-Rotas principais:
-
-```text
-/player_api.php
-/get.php
-/movie/{username}/{password}/{id}.m3u8
-```
-
-## Atualização
-
-Após `git pull`:
+E reinicie os serviços:
 
 ```bash
-sudo ./scripts/install.sh
-sudo systemctl restart minivod
+docker compose up -d
 ```

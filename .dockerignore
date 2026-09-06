@@ -1,0 +1,8 @@
+.git
+.env
+*.db
+vod-cache
+iptv
+__pycache__
+*.pyc
+rename-plan.json
