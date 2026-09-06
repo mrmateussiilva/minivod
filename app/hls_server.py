@@ -348,7 +348,7 @@ def admin_collections() -> list[sqlite3.Row]:
     with db_connect(readonly=True) as conn:
         return conn.execute(
             """
-            SELECT id, name, path, cover_path
+            SELECT id, name, path, cover_path, video_count
             FROM collections
             WHERE active = 1
             ORDER BY name COLLATE NOCASE
@@ -727,6 +727,15 @@ def build_collection_cover_url(base_url: str, collection_id: int) -> str:
     return f"{base_url.rstrip('/')}/covers/{int(collection_id)}"
 
 
+def format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return "0 B"
+
+
 def m3u_escape(value: object) -> str:
     """Return an M3U attribute/display value that cannot break its line."""
     return (
@@ -922,9 +931,30 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/admin":
                 self.handle_admin()
                 return
+            if path == "/admin/collections":
+                self.handle_admin_collections()
+                return
+            if path == "/admin/videos":
+                self.handle_admin_videos(query)
+                return
+            if path == "/admin/users":
+                self.handle_admin_users()
+                return
+            match = re.fullmatch(r"/admin/collections/(\d+)/cover-preview", path)
+            if match:
+                self.handle_admin_cover_preview(int(match.group(1)), query)
+                return
             match = re.fullmatch(r"/admin/collections/(\d+)/covers", path)
             if match:
-                self.handle_admin_collection_covers(int(match.group(1)))
+                self.handle_admin_collection_covers(int(match.group(1)), query)
+                return
+            match = re.fullmatch(r"/admin/collections/(\d+)", path)
+            if match:
+                self.handle_admin_collection(int(match.group(1)), query)
+                return
+            match = re.fullmatch(r"/admin/videos/(\d+)", path)
+            if match:
+                self.handle_admin_video(int(match.group(1)))
                 return
             self.send_json(404, {"error": "rota não encontrada"})
             return
@@ -1088,7 +1118,35 @@ class Handler(BaseHTTPRequestHandler):
     def send_admin_html(self, status: int, content: str) -> None:
         self.send_text(status, content, "text/html; charset=utf-8")
 
+    def render_admin_page(self, title: str, content: str) -> str:
+        nav = (
+            '<nav><a href="/admin">Dashboard</a><a href="/admin/collections">Coleções</a>'
+            '<a href="/admin/videos">Conteúdo</a><a href="/admin/users">Usuários</a></nav>'
+        )
+        return f'''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>{html.escape(title)} · MiniVOD</title><style>
+body{{background:#111;color:#ddd;font:14px sans-serif;max-width:1200px;margin:24px auto;padding:0 16px}}a{{color:#9cf}}nav{{display:flex;gap:18px;border-bottom:1px solid #444;padding:12px 0;margin-bottom:24px}}table{{width:100%;border-collapse:collapse}}td,th{{border-bottom:1px solid #333;padding:10px;text-align:left;vertical-align:top}}form{{display:inline-block;margin:2px}}input,select{{background:#222;border:1px solid #555;color:#eee;padding:7px}}button{{background:#333;border:1px solid #666;color:#eee;padding:7px;cursor:pointer}}button:hover{{background:#444}}.cards,.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}.card{{background:#1a1a1a;border:1px solid #333;padding:16px}}.metric{{font-size:24px;font-weight:bold}}.covers{{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}}.cover{{width:160px;height:220px;object-fit:cover;background:#222}}.empty{{width:160px;height:220px;display:grid;place-items:center;background:#222;color:#888}}video{{max-width:100%;width:720px}}.muted{{color:#999}}.pagination{{margin:18px 0;display:flex;gap:10px;align-items:center}}@media(max-width:600px){{body{{padding:0 10px}}nav{{flex-wrap:wrap}}}}</style></head><body><h1>MiniVOD Admin</h1>{nav}<h2>{html.escape(title)}</h2>{content}</body></html>'''
+
     def admin_page(self, error: str | None = None) -> str:
+        with db_connect(readonly=True) as conn:
+            stats = conn.execute('''SELECT
+                (SELECT COUNT(*) FROM videos WHERE active = 1) AS videos,
+                (SELECT COUNT(*) FROM collections WHERE active = 1 AND video_count > 0) AS collections,
+                (SELECT COUNT(*) FROM xtream_users WHERE enabled = 1) AS users,
+                COALESCE((SELECT SUM(size_bytes) FROM videos WHERE active = 1), 0) AS bytes,
+                (SELECT COUNT(*) FROM collections WHERE active = 1 AND video_count > 0 AND cover_path IS NOT NULL) AS covers''').fetchone()
+            largest = conn.execute('''SELECT name, video_count FROM collections WHERE active = 1 AND video_count > 0 ORDER BY video_count DESC LIMIT 5''').fetchall()
+            library = conn.execute("SELECT path FROM collections WHERE path IS NOT NULL AND active = 1 LIMIT 1").fetchone()
+        total_collections = int(stats["collections"])
+        cards = [("Vídeos ativos", stats["videos"]), ("Coleções ativas", total_collections), ("Usuários ativos", stats["users"]), ("Biblioteca", format_bytes(int(stats["bytes"]))), ("Capas configuradas", stats["covers"]), ("Sem capa", total_collections - int(stats["covers"]))]
+        card_html = "".join(f'<div class="card"><div class="muted">{label}</div><div class="metric">{value}</div></div>' for label, value in cards)
+        top = "".join(f'<li>{html.escape(display_collection_name(row["name"]))}: {int(row["video_count"])} vídeos</li>' for row in largest) or '<li>Nenhuma coleção.</li>'
+        error_html = f'<p>{html.escape(error)}</p>' if error else ""
+        root = str(Path(str(library["path"])).parent) if library else "Não identificado"
+        content = f'{error_html}<div class="cards">{card_html}</div><section><h3>Coleções maiores</h3><ol>{top}</ol></section><section><h3>Ambiente</h3><p>Banco<br><code>{html.escape(str(CONFIG.db))}</code></p><p>Biblioteca<br><code>{html.escape(root)}</code></p><p>Cache HLS<br><code>{html.escape(str(CONFIG.cache))}</code></p></section>'
+        return self.render_admin_page("Dashboard", content)
+
+    def legacy_admin_page(self, error: str | None = None) -> str:
         rows = admin_users()
         user_rows: list[str] = []
         for row in rows:
@@ -1148,9 +1206,102 @@ class Handler(BaseHTTPRequestHandler):
     def handle_admin(self) -> None:
         self.send_admin_html(200, self.admin_page())
 
-    def redirect_admin(self) -> None:
+    def admin_pagination(self, page: int, total: int, per_page: int, base: str) -> str:
+        if total <= per_page:
+            return ""
+        last = max(1, (total + per_page - 1) // per_page)
+        links = []
+        if page > 1:
+            links.append(f'<a href="{html.escape(base + str(page - 1), quote=True)}">Anterior</a>')
+        links.append(f"Página {page} de {last}")
+        if page < last:
+            links.append(f'<a href="{html.escape(base + str(page + 1), quote=True)}">Próxima</a>')
+        return f'<p class="pagination">{" · ".join(links)}</p>'
+
+    def page_args(self, query: dict[str, list[str]]) -> tuple[int, int]:
+        try:
+            page = max(1, int(query.get("page", ["1"])[0]))
+            per_page = int(query.get("per_page", ["50"])[0])
+        except ValueError:
+            return 1, 50
+        return page, per_page if per_page in {25, 50, 100} else 50
+
+    def handle_admin_collections(self) -> None:
+        rows = admin_collections()
+        cards = []
+        for row in rows:
+            collection_id = int(row["id"])
+            name = html.escape(display_collection_name(row["name"]))
+            cover = self.collection_cover_url(collection_id, row["cover_path"])
+            image = f'<img class="cover" src="/covers/{collection_id}" alt="">' if cover else '<div class="empty">Sem capa</div>'
+            cards.append(f'<article class="card">{image}<h3>{name}</h3><p>{int(row["video_count"])} vídeos</p><p class="muted">{"Capa configurada" if cover else "Nenhuma capa configurada"}</p><a href="/admin/collections/{collection_id}">Abrir</a> · <a href="/admin/collections/{collection_id}/covers">Trocar capa</a></article>')
+        self.send_admin_html(200, self.render_admin_page("Coleções", f'<div class="grid covers">{"".join(cards) or "Nenhuma coleção."}</div>'))
+
+    def handle_admin_collection(self, collection_id: int, query: dict[str, list[str]]) -> None:
+        collection = get_collection_cover_record(collection_id)
+        if collection is None:
+            self.send_admin_html(404, self.render_admin_page("Coleção", "Coleção não encontrada."))
+            return
+        page, per_page = self.page_args(query)
+        with db_connect(readonly=True) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM videos WHERE collection_id = ? AND active = 1", (collection_id,)).fetchone()[0]
+            videos = conn.execute("""SELECT id,title,filename,duration,width,height,video_codec,audio_codec,size_bytes,active FROM videos WHERE collection_id = ? AND active = 1 ORDER BY filename COLLATE NOCASE LIMIT ? OFFSET ?""", (collection_id, per_page, (page - 1) * per_page)).fetchall()
+        cover = self.collection_cover_url(collection_id, collection["cover_path"])
+        preview = f'<img class="cover" src="/covers/{collection_id}" alt="">' if cover else '<div class="empty">Sem capa</div>'
+        rows = "".join(f'<tr><td>#{row["id"]}</td><td>{html.escape(str(row["title"]))}<br><span class="muted">{html.escape(str(row["filename"]))}</span></td><td>{format_duration(row["duration"])}</td><td>{html.escape(f"{row["width"] or "?"}x{row["height"] or "?"}")}</td><td>{html.escape(f"{row["video_codec"] or "?"} / {row["audio_codec"] or "?"}")}</td><td>{format_bytes(int(row["size_bytes"] or 0))}</td><td><a href="/admin/videos/{row["id"]}">Detalhes</a> · <a href="/vod/{row["id"]}/index.m3u8">Reproduzir</a></td></tr>' for row in videos) or '<tr><td colspan="7">Nenhum vídeo nesta coleção.</td></tr>'
+        base = f"/admin/collections/{collection_id}?per_page={per_page}&page="
+        content = f'<p><a href="/admin/collections">← Coleções</a></p><div class="card">{preview}<h3>{html.escape(display_collection_name(collection["name"]))}</h3><p>{total} vídeos<br><code>{html.escape(str(collection_root(collection) or ""))}</code></p><p><a href="/admin/collections/{collection_id}/covers">Alterar capa</a> <form method="post" action="/admin/collections/{collection_id}/cover-auto"><button>Selecionar automaticamente</button></form><form method="post" action="/admin/collections/{collection_id}/cover-remove"><button>Remover capa</button></form></p></div><table><thead><tr><th>ID</th><th>Vídeo</th><th>Duração</th><th>Resolução</th><th>Codec</th><th>Tamanho</th><th>Ação</th></tr></thead><tbody>{rows}</tbody></table>{self.admin_pagination(page, total, per_page, base)}'
+        self.send_admin_html(200, self.render_admin_page(display_collection_name(collection["name"]), content))
+
+    def handle_admin_videos(self, query: dict[str, list[str]]) -> None:
+        page, per_page = self.page_args(query)
+        q = query.get("q", [""])[0].strip()
+        collection_id = query.get("collection", [""])[0]
+        status = query.get("status", ["active"])[0]
+        clauses, args = [], []
+        if q:
+            clauses.append("(v.title LIKE ? OR v.filename LIKE ? OR v.relative_path LIKE ?)")
+            args.extend([f"%{q}%"] * 3)
+        if collection_id.isdigit():
+            clauses.append("v.collection_id = ?")
+            args.append(int(collection_id))
+        if status == "active": clauses.append("v.active = 1")
+        elif status == "inactive": clauses.append("v.active = 0")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with db_connect(readonly=True) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM videos v" + where, args).fetchone()[0]
+            rows = conn.execute("SELECT v.id,v.title,v.filename,v.duration,v.size_bytes,v.active,c.name AS collection_name FROM videos v LEFT JOIN collections c ON c.id=v.collection_id" + where + " ORDER BY v.id DESC LIMIT ? OFFSET ?", [*args, per_page, (page-1)*per_page]).fetchall()
+            collections = conn.execute("SELECT id,name FROM collections WHERE active=1 ORDER BY name COLLATE NOCASE").fetchall()
+        options = '<option value="">Todas as coleções</option>' + ''.join(f'<option value="{row["id"]}" {"selected" if collection_id == str(row["id"]) else ""}>{html.escape(display_collection_name(row["name"]))}</option>' for row in collections)
+        table = ''.join(f'<tr><td>#{row["id"]}</td><td>{html.escape(str(row["title"]))}<br><span class="muted">{html.escape(str(row["filename"]))}</span></td><td>{html.escape(display_collection_name(row["collection_name"] or "Sem coleção"))}</td><td>{format_duration(row["duration"])} · {format_bytes(int(row["size_bytes"] or 0))}</td><td>{"Ativo" if row["active"] else "Inativo"}</td><td><a href="/admin/videos/{row["id"]}">Detalhes</a></td></tr>' for row in rows) or '<tr><td colspan="6">Nenhum conteúdo encontrado.</td></tr>'
+        prefix = f"/admin/videos?q={quote(q)}&collection={quote(collection_id)}&status={quote(status)}&per_page={per_page}&page="
+        content = f'<form method="get"><input name="q" value="{html.escape(q, quote=True)}" placeholder="Buscar vídeo..."><select name="collection">{options}</select><select name="status"><option value="active" {"selected" if status == "active" else ""}>Ativos</option><option value="inactive" {"selected" if status == "inactive" else ""}>Inativos</option><option value="all" {"selected" if status == "all" else ""}>Todos</option></select><button>Buscar</button></form><table><thead><tr><th>ID</th><th>Vídeo</th><th>Coleção</th><th>Dados</th><th>Status</th><th>Ação</th></tr></thead><tbody>{table}</tbody></table>{self.admin_pagination(page, total, per_page, prefix)}'
+        self.send_admin_html(200, self.render_admin_page("Conteúdo", content))
+
+    def handle_admin_video(self, video_id: int) -> None:
+        with db_connect(readonly=True) as conn:
+            video = conn.execute("SELECT v.*,c.name AS collection_name FROM videos v LEFT JOIN collections c ON c.id=v.collection_id WHERE v.id=?", (video_id,)).fetchone()
+        if video is None:
+            self.send_admin_html(404, self.render_admin_page("Vídeo", "Vídeo não encontrado.")); return
+        fields = [("ID", video["id"]), ("Título", video["title"]), ("Coleção", display_collection_name(video["collection_name"] or "")), ("Arquivo", video["filename"]), ("Path", video["path"]), ("Tamanho", format_bytes(int(video["size_bytes"] or 0))), ("Duração", format_duration(video["duration"])), ("Formato", video["format_name"] or ""), ("Vídeo", video["video_codec"] or ""), ("Áudio", video["audio_codec"] or ""), ("Resolução", f'{video["width"] or "?"}x{video["height"] or "?"}'), ("FPS", video["fps"] or ""), ("Bitrate", video["bitrate"] or ""), ("ffprobe", "OK" if video["probe_ok"] else "Erro")]
+        details = ''.join(f'<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>' for key,value in fields)
+        error = f'<p>{html.escape(str(video["probe_error"]))}</p>' if video["probe_error"] else ""
+        playlist = playlist_path(video_id)
+        cache = "disponível" if playlist.exists() else "ainda não gerado"
+        content = f'<p><a href="/admin/collections/{video["collection_id"]}">← Coleção</a></p><table>{details}</table>{error}<p>Cache HLS: {cache}</p><video controls preload="metadata"><source src="/vod/{video_id}/index.m3u8" type="application/vnd.apple.mpegurl"></video><p><a href="/vod/{video_id}/index.m3u8">Abrir playlist HLS</a></p>'
+        self.send_admin_html(200, self.render_admin_page("Vídeo", content))
+
+    def handle_admin_users(self) -> None:
+        rows = []
+        for row in admin_users():
+            user_id = int(row["id"]); name = html.escape(str(row["username"])); state = "Ativo" if row["enabled"] else "Desativado"; action = "disable" if row["enabled"] else "enable"
+            rows.append(f'<tr><td>{name}</td><td>{state}</td><td>{row["max_connections"]}</td><td>{row["exp_date"] or "Nunca"}</td><td><form method="post" action="/admin/users/{user_id}/{action}"><button>{"Desativar" if action == "disable" else "Habilitar"}</button></form><form method="post" action="/admin/users/{user_id}/password"><input type="password" name="password" minlength="6" required placeholder="Nova senha"><button>Alterar</button></form></td></tr>')
+        content = f'<table><thead><tr><th>Usuário</th><th>Status</th><th>Máx.</th><th>Expira</th><th>Ações</th></tr></thead><tbody>{"".join(rows) or "<tr><td colspan=5>Nenhum usuário.</td></tr>"}</tbody></table><section><h3>Novo usuário</h3><form method="post" action="/admin/users"><input name="username" minlength="3" maxlength="64" required placeholder="Usuário"><input type="password" name="password" minlength="6" required placeholder="Senha"><input type="number" name="max_connections" value="1" min="1" required><input type="number" name="expires_days" min="1" placeholder="Expira em dias"><button>Criar usuário</button></form></section>'
+        self.send_admin_html(200, self.render_admin_page("Usuários", content))
+
+    def redirect_admin(self, location: str = "/admin") -> None:
         self.send_response(303)
-        self.send_header("Location", "/admin")
+        self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1187,18 +1338,32 @@ class Handler(BaseHTTPRequestHandler):
 
         match = re.fullmatch(r"/admin/collections/(\d+)/cover", path)
         if match:
-            if not admin_set_collection_cover(int(match.group(1)), self.form_value(form, "cover")):
+            collection_id = int(match.group(1))
+            if not admin_set_collection_cover(collection_id, self.form_value(form, "cover")):
                 self.send_admin_html(400, self.admin_page("Capa inválida."))
                 return
-            self.redirect_admin()
+            self.redirect_admin(f"/admin/collections/{collection_id}")
             return
 
-        match = re.fullmatch(r"/admin/collections/(\d+)/cover/auto", path)
+        match = re.fullmatch(r"/admin/collections/(\d+)/(?:cover/auto|cover-auto)", path)
         if match:
-            if not admin_auto_select_collection_cover(int(match.group(1))):
+            collection_id = int(match.group(1))
+            if not admin_auto_select_collection_cover(collection_id):
                 self.send_admin_html(404, self.admin_page("Coleção não encontrada."))
                 return
-            self.redirect_admin()
+            self.redirect_admin(f"/admin/collections/{collection_id}")
+            return
+
+        match = re.fullmatch(r"/admin/collections/(\d+)/cover-remove", path)
+        if match:
+            collection_id = int(match.group(1))
+            if get_collection_cover_record(collection_id) is None:
+                self.send_admin_html(404, self.admin_page("Coleção não encontrada."))
+                return
+            with db_connect() as conn:
+                conn.execute("UPDATE collections SET cover_path = NULL WHERE id = ?", (collection_id,))
+                conn.commit()
+            self.redirect_admin(f"/admin/collections/{collection_id}")
             return
 
         self.send_json(404, {"error": "rota não encontrada"})
@@ -1231,29 +1396,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.redirect_admin()
 
-    def handle_admin_collection_covers(self, collection_id: int) -> None:
+    def handle_admin_collection_covers(self, collection_id: int, query: dict[str, list[str]]) -> None:
         collection = get_collection_cover_record(collection_id)
         if collection is None:
             self.send_admin_html(404, self.admin_page("Coleção não encontrada."))
             return
         root = collection_root(collection)
         candidates = find_collection_cover_candidates(root) if root else []
+        page, per_page = self.page_args(query)
+        candidates = candidates[(page - 1) * per_page:page * per_page]
         name = html.escape(display_collection_name(collection["name"]))
-        options = []
+        cards = []
         for candidate in candidates:
             relative = candidate.relative_to(root)
             escaped = html.escape(str(relative))
-            options.append(f'<option value="{escaped}">{escaped}</option>')
-        content = (
-            '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">'
-            '<title>Capas MiniVOD</title></head><body>'
-            f"<h1>Capas: {name}</h1>"
-            f'<form method="post" action="/admin/collections/{collection_id}/cover">'
-            f'<select name="cover">{"".join(options)}</select> '
-            '<button>Usar capa</button></form><p><a href="/admin">Voltar</a></p>'
-            "</body></html>"
-        )
-        self.send_admin_html(200, content)
+            cards.append(f'<article class="card"><img class="cover" src="/admin/collections/{collection_id}/cover-preview?path={quote(str(relative))}" alt=""><p>{escaped}</p><form method="post" action="/admin/collections/{collection_id}/cover"><input type="hidden" name="cover" value="{escaped}"><button>Selecionar</button></form></article>')
+        total = len(find_collection_cover_candidates(root)) if root else 0
+        content = f'<p><a href="/admin/collections/{collection_id}">← Coleção</a></p><div class="grid covers">{"".join(cards) or "Nenhuma imagem candidata."}</div>{self.admin_pagination(page, total, per_page, f"/admin/collections/{collection_id}/covers?per_page={per_page}&page=")}'
+        self.send_admin_html(200, self.render_admin_page(f"Capas: {name}", content))
+
+    def handle_admin_cover_preview(self, collection_id: int, query: dict[str, list[str]]) -> None:
+        collection = get_collection_cover_record(collection_id)
+        root = collection_root(collection) if collection else None
+        relative = query.get("path", [""])[0]
+        candidate = root / relative if root else None
+        if candidate is None or not is_within(candidate, root) or not is_image_file(candidate):
+            self.send_json(404, {"error": "imagem não encontrada"})
+            return
+        content_type = image_content_type(candidate)
+        if content_type is None:
+            self.send_json(404, {"error": "imagem não encontrada"})
+            return
+        self.send_file(candidate, content_type)
 
     # -----------------------------------------------------------------
     # Base API

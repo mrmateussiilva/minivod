@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -221,6 +222,29 @@ class XtreamCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["user_info"]["auth"], 0)
+
+    def test_admin_pages_auth_and_escaping(self) -> None:
+        status, _ = self.request("/admin")
+        self.assertEqual(status, 404)
+        hls.CONFIG.admin_user = "admin"
+        hls.CONFIG.admin_password = "admin-pass"
+        token = base64.b64encode(b"admin:admin-pass").decode()
+        headers = {"Authorization": f"Basic {token}"}
+        with urlopen(Request(f"{self.base_url}/admin", headers=headers)) as response:
+            page = response.read().decode()
+            self.assertIn("Vídeos ativos", page)
+            self.assertIn("Coleções", page)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+        for path, expected in [
+            ("/admin/collections", "Bella Thorne OnlyFans"),
+            ("/admin/collections/1?per_page=25", "Detalhes"),
+            ("/admin/videos?q=quoted", "bella &quot;quoted&quot;"),
+            ("/admin/videos/1", "Abrir playlist HLS"),
+            ("/admin/users", "Novo usuário"),
+            ("/admin/collections/1/covers", "Selecionar"),
+        ]:
+            with urlopen(Request(f"{self.base_url}{path}", headers=headers)) as response:
+                self.assertIn(expected, response.read().decode())
 
     def test_password_sanitization(self) -> None:
         message = hls.sanitize_log_message(
