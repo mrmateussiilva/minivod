@@ -372,8 +372,9 @@ def ensure_collection_cover(
 def existing_video(
     conn: sqlite3.Connection,
     absolute_path: str,
+    relative_path: str,
 ) -> sqlite3.Row | None:
-    return conn.execute(
+    row = conn.execute(
         """
         SELECT
             id,
@@ -384,6 +385,25 @@ def existing_video(
         WHERE path = ?
         """,
         (absolute_path,),
+    ).fetchone()
+    if row is not None:
+        return row
+
+    # Bind mounts can change the absolute prefix (for example, from a host
+    # scan under /home/server/downloads to /data inside Docker).  The scanner
+    # keeps relative_path unique, so it is the stable identity within the
+    # configured library root and lets us retain the existing video ID.
+    return conn.execute(
+        """
+        SELECT
+            id,
+            size_bytes,
+            mtime_ns,
+            probe_ok
+        FROM videos
+        WHERE relative_path = ?
+        """,
+        (relative_path,),
     ).fetchone()
 
 
@@ -489,7 +509,7 @@ def scan(
                     if not cover_row or not cover_row["cover_path"]:
                         stats["covers_missing"] += 1
 
-            current = existing_video(conn, absolute_path)
+            current = existing_video(conn, absolute_path, relative_path)
 
             unchanged = (
                 current is not None
@@ -506,6 +526,7 @@ def scan(
                         collection_id = ?,
                         title = ?,
                         filename = ?,
+                        path = ?,
                         relative_path = ?,
                         active = 1,
                         updated_at = CURRENT_TIMESTAMP
@@ -515,6 +536,7 @@ def scan(
                         collection_id,
                         title_from_filename(path),
                         path.name,
+                        absolute_path,
                         relative_path,
                         current["id"],
                     ),
@@ -609,6 +631,7 @@ def scan(
                         collection_id = ?,
                         title = ?,
                         filename = ?,
+                        path = ?,
                         relative_path = ?,
                         size_bytes = ?,
                         mtime_ns = ?,
@@ -630,6 +653,7 @@ def scan(
                         collection_id,
                         title_from_filename(path),
                         path.name,
+                        absolute_path,
                         relative_path,
                         stat.st_size,
                         stat.st_mtime_ns,

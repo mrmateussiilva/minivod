@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -343,6 +344,47 @@ class XtreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(movie_status, 503)
         self.assertEqual(series_status, 503)
         self.assertEqual(movie_body, series_body)
+
+
+class ScannerRelocationTests(unittest.TestCase):
+    def test_reuses_relative_path_when_library_mount_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "iptv"
+            video_path = root / "Coleção" / "video.mp4"
+            video_path.parent.mkdir(parents=True)
+            video_path.write_bytes(b"video")
+            stat = video_path.stat()
+            db = Path(directory) / "vod.db"
+
+            with closing(sqlite3.connect(db)) as conn:
+                scanner.init_db(conn)
+                conn.execute(
+                    "INSERT INTO collections (id,name,slug,path,active) VALUES (1,?,?,?,1)",
+                    ("Coleção", "colecao", "/legacy/iptv/Coleção"),
+                )
+                conn.execute(
+                    """INSERT INTO videos
+                    (id,collection_id,title,filename,path,relative_path,size_bytes,mtime_ns,active)
+                    VALUES (1,1,'video','video.mp4',?,?,?,?,1)""",
+                    (
+                        "/legacy/iptv/Coleção/video.mp4",
+                        "Coleção/video.mp4",
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    ),
+                )
+                conn.commit()
+
+            with patch.object(scanner.shutil, "which", return_value="/usr/bin/ffprobe"), patch.object(scanner, "ffprobe") as probe:
+                scanner.scan(root, db, force_probe=False)
+            probe.assert_not_called()
+
+            with closing(sqlite3.connect(db)) as conn:
+                row = conn.execute(
+                    "SELECT id,path,active FROM videos WHERE relative_path = ?",
+                    ("Coleção/video.mp4",),
+                ).fetchone()
+            self.assertEqual(row, (1, str(video_path.resolve()), 1))
 
 
 if __name__ == "__main__":
