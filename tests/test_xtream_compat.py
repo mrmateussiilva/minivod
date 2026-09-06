@@ -14,6 +14,8 @@ from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
+APP = ROOT / "app"
+sys.path.insert(0, str(APP))
 
 
 def load_module(name: str, filename: str):
@@ -28,6 +30,7 @@ def load_module(name: str, filename: str):
 
 hls = load_module("minivod_hls_server", "hls_server.py")
 scanner = load_module("minivod_scan_vod", "scan_vod.py")
+cover_support = load_module("minivod_cover_support", "cover_support.py")
 
 
 class XtreamCompatibilityTests(unittest.TestCase):
@@ -41,13 +44,18 @@ class XtreamCompatibilityTests(unittest.TestCase):
         cls.db = root / "vod.db"
         cache = root / "cache"
         cache.mkdir()
+        cls.bella_dir = root / "Bella Thorne OnlyFans"
+        cls.bella_dir.mkdir()
+        cls.cover_file = cls.bella_dir / "cover.jpg"
+        cls.cover_file.write_bytes(b"test-jpeg")
 
         with sqlite3.connect(cls.db) as conn:
             scanner.init_db(conn)
             hls.init_xtream_schema(conn)
             conn.execute(
-                "INSERT INTO collections (id, name, slug, video_count, active) "
-                "VALUES (1, 'Bella Thorne OnlyFans', 'bella', 2, 1)"
+                "INSERT INTO collections (id, name, slug, path, cover_path, video_count, active) "
+                "VALUES (1, 'Bella Thorne OnlyFans', 'bella', ?, ?, 2, 1)",
+                (str(cls.bella_dir), str(cls.cover_file)),
             )
             conn.execute(
                 "INSERT INTO collections (id, name, slug, video_count, active) "
@@ -133,11 +141,13 @@ class XtreamCompatibilityTests(unittest.TestCase):
     def test_vod_categories_and_filtering(self) -> None:
         categories = self.api("get_vod_categories")
         self.assertEqual(categories[0]["category_name"], "Bella Thorne OnlyFans")
+        self.assertEqual(categories[0]["cover"], "https://vod.example.test/covers/1")
         self.assertIn({"category_id": "2", "category_name": "Outros", "parent_id": 0}, categories)
 
         streams = self.api("get_vod_streams", category_id="1")
         self.assertEqual([stream["stream_id"] for stream in streams], [1, 2])
         self.assertTrue(all(stream["category_id"] == "1" for stream in streams))
+        self.assertEqual(streams[0]["stream_icon"], "https://vod.example.test/covers/1")
         self.assertEqual(
             [stream["stream_id"] for stream in self.api("get_vod_streams")],
             [1, 2, 3],
@@ -151,11 +161,13 @@ class XtreamCompatibilityTests(unittest.TestCase):
         series = self.api("get_series", category_id="1")
         self.assertEqual([item["series_id"] for item in series], [1, 2])
         self.assertEqual(series[1]["name"], "Outros")
+        self.assertEqual(series[0]["cover"], "https://vod.example.test/covers/1")
         self.assertEqual(self.api("get_series"), series)
 
         info = self.api("get_series_info", series_id="1")
         self.assertEqual(info["seasons"][0]["episode_count"], 2)
         self.assertEqual(info["info"]["name"], "Bella Thorne OnlyFans")
+        self.assertEqual(info["info"]["cover"], "https://vod.example.test/covers/1")
         self.assertEqual([episode["id"] for episode in info["episodes"]["1"]], ["1", "2"])
         self.assertEqual(info["episodes"]["1"][0]["info"]["duration"], "00:02:03")
 
@@ -170,6 +182,7 @@ class XtreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(playlist.startswith("#EXTM3U\n"))
         self.assertIn('group-title="Bella Thorne OnlyFans"', playlist)
+        self.assertIn('tvg-logo="https://vod.example.test/covers/1"', playlist)
         self.assertIn('group-title="Outros"', playlist)
         self.assertIn('tvg-name="bella \\"quoted\\"\\\\line next"', playlist)
         self.assertIn("/movie/client/secret/1.m3u8", playlist)
@@ -217,6 +230,48 @@ class XtreamCompatibilityTests(unittest.TestCase):
         self.assertNotIn("query-secret", message)
         self.assertIn("/series/user/***/1.m3u8", message)
         self.assertIn("password=***", message)
+
+    def test_cover_selection_priority_and_stability(self) -> None:
+        photos = self.bella_dir / "Fotos"
+        photos.mkdir()
+        (photos / "thumbnail.jpg").write_bytes(b"thumbnail")
+        fallback = photos / "foto.jpg"
+        fallback.write_bytes(b"fallback")
+        self.assertEqual(cover_support.find_collection_cover(self.bella_dir), self.cover_file)
+
+        self.cover_file.unlink()
+        self.assertEqual(cover_support.find_collection_cover(self.bella_dir), fallback)
+        with sqlite3.connect(self.db) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("UPDATE collections SET cover_path = ? WHERE id = 1", (str(fallback),))
+            self.assertFalse(scanner.ensure_collection_cover(conn, 1, self.bella_dir))
+            fallback.unlink()
+            replacement = self.bella_dir / "poster.png"
+            replacement.write_bytes(b"png")
+            self.assertTrue(scanner.ensure_collection_cover(conn, 1, self.bella_dir))
+            self.assertEqual(
+                conn.execute("SELECT cover_path FROM collections WHERE id = 1").fetchone()[0],
+                str(replacement),
+            )
+
+    def test_cover_route_and_path_traversal_protection(self) -> None:
+        with sqlite3.connect(self.db) as conn:
+            current = conn.execute("SELECT cover_path FROM collections WHERE id = 1").fetchone()[0]
+            if not current:
+                conn.execute("UPDATE collections SET cover_path = ? WHERE id = 1", (str(self.cover_file),))
+                conn.commit()
+        with urlopen(f"{self.base_url}/covers/1") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(response.headers["Cache-Control"], "public, max-age=86400")
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            self.assertTrue(response.read())
+        status, _ = self.request("/covers/999")
+        self.assertEqual(status, 404)
+        self.assertFalse(
+            cover_support.is_within(self.bella_dir / "../outside.jpg", self.bella_dir)
+        )
+        self.assertFalse(hls.admin_set_collection_cover(1, "../outside.jpg"))
 
     def test_series_stream_alias_authenticates_like_movie(self) -> None:
         # The temporary catalog intentionally has no media files. Both routes

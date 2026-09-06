@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cover_support import ensure_cover_column, find_collection_cover, is_image_file
+
 
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -59,6 +61,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL UNIQUE,
             slug TEXT NOT NULL UNIQUE,
             path TEXT,
+            cover_path TEXT,
             video_count INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -112,6 +115,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON videos(relative_path);
         """
     )
+    ensure_cover_column(conn)
     conn.commit()
 
 
@@ -340,6 +344,28 @@ def ensure_collection(
     return int(row["id"])
 
 
+def ensure_collection_cover(
+    conn: sqlite3.Connection,
+    collection_id: int,
+    collection_root: Path,
+) -> bool:
+    """Keep a valid selected cover stable; choose only when it is missing."""
+    row = conn.execute(
+        "SELECT cover_path FROM collections WHERE id = ?",
+        (collection_id,),
+    ).fetchone()
+    current = Path(str(row["cover_path"])) if row and row["cover_path"] else None
+    if current is not None and is_image_file(current):
+        return False
+
+    cover = find_collection_cover(collection_root)
+    conn.execute(
+        "UPDATE collections SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (str(cover) if cover else None, collection_id),
+    )
+    return cover is not None
+
+
 def existing_video(
     conn: sqlite3.Connection,
     absolute_path: str,
@@ -413,7 +439,10 @@ def scan(
             "unchanged": 0,
             "probed": 0,
             "probe_errors": 0,
+            "covers_found": 0,
+            "covers_missing": 0,
         }
+        checked_covers: set[int] = set()
 
         started = time.monotonic()
 
@@ -443,6 +472,19 @@ def scan(
                 collection_slug,
                 collection_path,
             )
+
+            if collection_id not in checked_covers:
+                checked_covers.add(collection_id)
+                collection_root = Path(collection_path) if collection_path else root
+                if ensure_collection_cover(conn, collection_id, collection_root):
+                    stats["covers_found"] += 1
+                else:
+                    cover_row = conn.execute(
+                        "SELECT cover_path FROM collections WHERE id = ?",
+                        (collection_id,),
+                    ).fetchone()
+                    if not cover_row or not cover_row["cover_path"]:
+                        stats["covers_missing"] += 1
 
             current = existing_video(conn, absolute_path)
 
@@ -647,6 +689,20 @@ def scan(
             """
         ).fetchone()[0]
 
+        cover_rows = conn.execute(
+            """
+            SELECT cover_path
+            FROM collections
+            WHERE active = 1
+              AND video_count > 0
+            """
+        ).fetchall()
+        covers_available = sum(
+            1
+            for row in cover_rows
+            if row["cover_path"] and is_image_file(Path(str(row["cover_path"])))
+        )
+
         elapsed = time.monotonic() - started
 
         print()
@@ -662,6 +718,8 @@ def scan(
         print(f"Ativos no banco:   {active}")
         print(f"Ausentes/inativos: {inactive}")
         print(f"Coleções ativas:   {collections}")
+        print(f"Capas disponíveis: {covers_available}")
+        print(f"Sem capa:          {collections - covers_available}")
         print(f"Tempo:              {elapsed:.1f}s")
         print(f"Banco:              {db_path}")
 

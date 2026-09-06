@@ -24,6 +24,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from cover_support import (
+    ensure_cover_column,
+    find_collection_cover,
+    find_collection_cover_candidates,
+    image_content_type,
+    is_image_file,
+    is_within,
+)
+
 
 SEGMENT_RE = re.compile(r"^segment-\d{6}\.ts$")
 PLAYLIST_NAME = "index.m3u8"
@@ -79,6 +88,7 @@ def raw_db_connect(db_path: Path) -> sqlite3.Connection:
 
 
 def init_xtream_schema(conn: sqlite3.Connection) -> None:
+    ensure_cover_column(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS xtream_users (
@@ -124,7 +134,8 @@ def get_video(video_id: int) -> sqlite3.Row | None:
                 v.active,
                 v.probe_ok,
                 v.created_at,
-                c.name AS collection_name
+                c.name AS collection_name,
+                c.cover_path AS collection_cover_path
             FROM videos v
             LEFT JOIN collections c ON c.id = v.collection_id
             WHERE v.id = ?
@@ -331,6 +342,74 @@ def admin_users() -> list[sqlite3.Row]:
             ORDER BY username COLLATE NOCASE
             """
         ).fetchall()
+
+
+def admin_collections() -> list[sqlite3.Row]:
+    with db_connect(readonly=True) as conn:
+        return conn.execute(
+            """
+            SELECT id, name, path, cover_path
+            FROM collections
+            WHERE active = 1
+            ORDER BY name COLLATE NOCASE
+            """
+        ).fetchall()
+
+
+def get_collection_cover_record(collection_id: int) -> sqlite3.Row | None:
+    with db_connect(readonly=True) as conn:
+        return conn.execute(
+            """
+            SELECT c.id, c.name, c.path, c.cover_path,
+                (SELECT v.path FROM videos v WHERE v.collection_id = c.id
+                 AND v.active = 1 ORDER BY v.id LIMIT 1) AS sample_video_path
+            FROM collections c
+            WHERE c.id = ? AND c.active = 1
+            """,
+            (collection_id,),
+        ).fetchone()
+
+
+def collection_root(collection: sqlite3.Row) -> Path | None:
+    if collection["path"]:
+        return Path(str(collection["path"]))
+    if collection["sample_video_path"]:
+        return Path(str(collection["sample_video_path"])).parent
+    return None
+
+
+def admin_set_collection_cover(collection_id: int, relative_path: str) -> bool:
+    collection = get_collection_cover_record(collection_id)
+    if collection is None:
+        return False
+    root = collection_root(collection)
+    if root is None:
+        return False
+    candidate = root / relative_path
+    if not is_within(candidate, root) or not is_image_file(candidate):
+        return False
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE collections SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (str(candidate.resolve()), collection_id),
+        )
+        conn.commit()
+    return True
+
+
+def admin_auto_select_collection_cover(collection_id: int) -> bool:
+    collection = get_collection_cover_record(collection_id)
+    if collection is None:
+        return False
+    root = collection_root(collection)
+    cover = find_collection_cover(root) if root else None
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE collections SET cover_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (str(cover) if cover else None, collection_id),
+        )
+        conn.commit()
+    return True
 
 
 def admin_create_user(
@@ -644,6 +723,10 @@ def display_collection_name(name: object) -> str:
     return "Outros" if str(name) == "[ROOT]" else str(name)
 
 
+def build_collection_cover_url(base_url: str, collection_id: int) -> str:
+    return f"{base_url.rstrip('/')}/covers/{int(collection_id)}"
+
+
 def m3u_escape(value: object) -> str:
     """Return an M3U attribute/display value that cannot break its line."""
     return (
@@ -689,11 +772,15 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def end_headers(self) -> None:
-        is_admin = urlparse(self.path).path.startswith("/admin")
+        path = urlparse(self.path).path
+        is_admin = path.startswith("/admin")
         if is_admin:
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+        elif path.startswith("/covers/"):
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
         else:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header(
@@ -716,6 +803,15 @@ class Handler(BaseHTTPRequestHandler):
             return f"http://{host}"
 
         return f"http://127.0.0.1:{CONFIG.port}"
+
+    def collection_cover_url(
+        self,
+        collection_id: int,
+        cover_path: object,
+    ) -> str:
+        if not cover_path or not is_image_file(Path(str(cover_path))):
+            return ""
+        return build_collection_cover_url(self.base_url(), collection_id)
 
     def send_json(self, status: int, payload: object) -> None:
         body = json.dumps(
@@ -825,8 +921,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/admin":
                 self.handle_admin()
-            else:
-                self.send_json(404, {"error": "rota não encontrada"})
+                return
+            match = re.fullmatch(r"/admin/collections/(\d+)/covers", path)
+            if match:
+                self.handle_admin_collection_covers(int(match.group(1)))
+                return
+            self.send_json(404, {"error": "rota não encontrada"})
             return
 
         if path == "/":
@@ -839,6 +939,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/collections":
             self.handle_collections()
+            return
+
+        match = re.fullmatch(r"/covers/(\d+)", path)
+        if match:
+            self.handle_collection_cover(int(match.group(1)))
             return
 
         if path in {"/player_api.php", "/player_api"}:
@@ -1010,6 +1115,23 @@ class Handler(BaseHTTPRequestHandler):
                 "</td></tr>"
             )
 
+        collection_rows: list[str] = []
+        for row in admin_collections():
+            collection_id = int(row["id"])
+            name = html.escape(display_collection_name(row["name"]))
+            cover = self.collection_cover_url(collection_id, row["cover_path"])
+            preview = (
+                f'<img src="/covers/{collection_id}" alt="" width="80" height="120">'
+                if cover else "—"
+            )
+            status = "Configurada" if cover else "Sem imagem"
+            collection_rows.append(
+                f"<tr><td>{name}</td><td>{preview}</td><td>{status}</td><td>"
+                f'<a href="/admin/collections/{collection_id}/covers">Selecionar</a>'
+                f'<form method="post" action="/admin/collections/{collection_id}/cover/auto">'
+                "<button>Auto</button></form></td></tr>"
+            )
+
         error_html = ""
         if error:
             error_html = f"<p class=\"error\">{html.escape(error)}</p>"
@@ -1020,6 +1142,7 @@ class Handler(BaseHTTPRequestHandler):
 </head><body><h1>MiniVOD Admin</h1>{error_html}<section><h2>Usuários</h2>
 <table><thead><tr><th>Usuário</th><th>Status</th><th>Conexões</th><th>Expiração</th><th>Ações</th></tr></thead><tbody>{users_html}</tbody></table></section>
 <section><h2>Novo usuário</h2><form method=\"post\" action=\"/admin/users\"><label>Usuário</label><input name=\"username\" minlength=\"3\" maxlength=\"64\" required pattern=\"[A-Za-z0-9._-]+\"><label>Senha</label><input type=\"password\" name=\"password\" minlength=\"6\" required><label>Máximo de conexões</label><input type=\"number\" name=\"max_connections\" value=\"1\" min=\"1\" required><label>Expira em dias</label><input type=\"number\" name=\"expires_days\" min=\"1\"><p><button>Criar usuário</button></p></form></section>
+<section><h2>Capas das coleções</h2><table><thead><tr><th>Coleção</th><th>Capa</th><th>Status</th><th>Ação</th></tr></thead><tbody>{''.join(collection_rows) or '<tr><td colspan="4">Nenhuma coleção.</td></tr>'}</tbody></table></section>
 </body></html>"""
 
     def handle_admin(self) -> None:
@@ -1062,6 +1185,22 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect_admin()
             return
 
+        match = re.fullmatch(r"/admin/collections/(\d+)/cover", path)
+        if match:
+            if not admin_set_collection_cover(int(match.group(1)), self.form_value(form, "cover")):
+                self.send_admin_html(400, self.admin_page("Capa inválida."))
+                return
+            self.redirect_admin()
+            return
+
+        match = re.fullmatch(r"/admin/collections/(\d+)/cover/auto", path)
+        if match:
+            if not admin_auto_select_collection_cover(int(match.group(1))):
+                self.send_admin_html(404, self.admin_page("Coleção não encontrada."))
+                return
+            self.redirect_admin()
+            return
+
         self.send_json(404, {"error": "rota não encontrada"})
 
     def handle_admin_create_user(self, form: dict[str, list[str]]) -> None:
@@ -1091,6 +1230,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_admin_html(409, self.admin_page("Este usuário já existe."))
             return
         self.redirect_admin()
+
+    def handle_admin_collection_covers(self, collection_id: int) -> None:
+        collection = get_collection_cover_record(collection_id)
+        if collection is None:
+            self.send_admin_html(404, self.admin_page("Coleção não encontrada."))
+            return
+        root = collection_root(collection)
+        candidates = find_collection_cover_candidates(root) if root else []
+        name = html.escape(display_collection_name(collection["name"]))
+        options = []
+        for candidate in candidates:
+            relative = candidate.relative_to(root)
+            escaped = html.escape(str(relative))
+            options.append(f'<option value="{escaped}">{escaped}</option>')
+        content = (
+            '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">'
+            '<title>Capas MiniVOD</title></head><body>'
+            f"<h1>Capas: {name}</h1>"
+            f'<form method="post" action="/admin/collections/{collection_id}/cover">'
+            f'<select name="cover">{"".join(options)}</select> '
+            '<button>Usar capa</button></form><p><a href="/admin">Voltar</a></p>'
+            "</body></html>"
+        )
+        self.send_admin_html(200, content)
 
     # -----------------------------------------------------------------
     # Base API
@@ -1141,6 +1304,24 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception as exc:
             self.send_json(500, {"status": "error", "error": str(exc)})
+
+    def handle_collection_cover(self, collection_id: int) -> None:
+        collection = get_collection_cover_record(collection_id)
+        if collection is None or not collection["cover_path"]:
+            self.send_json(404, {"error": "capa não encontrada"})
+            return
+        root = collection_root(collection)
+        cover = Path(str(collection["cover_path"]))
+        content_type = image_content_type(cover)
+        if (
+            root is None
+            or not is_within(cover, root)
+            or content_type is None
+            or not is_image_file(cover)
+        ):
+            self.send_json(404, {"error": "capa não encontrada"})
+            return
+        self.send_file(cover, content_type)
 
     def handle_collections(self) -> None:
         with db_connect(readonly=True) as conn:
@@ -1535,7 +1716,7 @@ class Handler(BaseHTTPRequestHandler):
         with db_connect(readonly=True) as conn:
             rows = conn.execute(
                 """
-                SELECT id, name
+                SELECT id, name, cover_path
                 FROM collections
                 WHERE active = 1
                   AND video_count > 0
@@ -1551,6 +1732,8 @@ class Handler(BaseHTTPRequestHandler):
                     "category_id": str(row["id"]),
                     "category_name": display_collection_name(row["name"]),
                     "parent_id": 0,
+                    **({"cover": self.collection_cover_url(row["id"], row["cover_path"])}
+                       if self.collection_cover_url(row["id"], row["cover_path"]) else {}),
                 }
                 for row in rows
             ],
@@ -1562,7 +1745,8 @@ class Handler(BaseHTTPRequestHandler):
                 v.id,
                 v.title,
                 v.collection_id,
-                v.created_at
+                v.created_at,
+                c.cover_path
             FROM videos v
             JOIN collections c ON c.id = v.collection_id
             WHERE v.active = 1
@@ -1594,7 +1778,9 @@ class Handler(BaseHTTPRequestHandler):
                     "name": row["title"],
                     "stream_type": "movie",
                     "stream_id": int(row["id"]),
-                    "stream_icon": "",
+                    "stream_icon": self.collection_cover_url(
+                        row["collection_id"], row["cover_path"]
+                    ),
                     "added": sql_timestamp_to_unix(row["created_at"]),
                     "category_id": str(row["collection_id"]),
                     "direct_source": "",
@@ -1623,7 +1809,7 @@ class Handler(BaseHTTPRequestHandler):
         with db_connect(readonly=True) as conn:
             rows = conn.execute(
                 """
-                SELECT id, name
+                SELECT id, name, cover_path
                 FROM collections
                 WHERE active = 1
                   AND video_count > 0
@@ -1632,14 +1818,16 @@ class Handler(BaseHTTPRequestHandler):
                 """
             ).fetchall()
 
-        self.send_json(
-            200,
-            [
+        payload = []
+        for num, row in enumerate(rows, start=1):
+            cover = self.collection_cover_url(row["id"], row["cover_path"])
+            payload.append(
                 {
                     "num": num,
                     "name": display_collection_name(row["name"]),
                     "series_id": int(row["id"]),
-                    "cover": "",
+                    "cover": cover,
+                    "cover_big": cover,
                     "plot": "",
                     "cast": "",
                     "director": "",
@@ -1648,13 +1836,15 @@ class Handler(BaseHTTPRequestHandler):
                     "last_modified": "0",
                     "rating": "0",
                     "rating_5based": 0,
-                    "backdrop_path": [],
+                    "backdrop_path": [cover] if cover else [],
                     "youtube_trailer": "",
                     "episode_run_time": "0",
                     "category_id": "1",
                 }
-                for num, row in enumerate(rows, start=1)
-            ],
+            )
+        self.send_json(
+            200,
+            payload,
         )
 
     def xtream_series_info(self, series_id: int) -> None:
@@ -1666,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
         with db_connect(readonly=True) as conn:
             collection = conn.execute(
                 """
-                SELECT id, name
+                SELECT id, name, cover_path
                 FROM collections
                 WHERE id = ?
                   AND active = 1
@@ -1690,6 +1880,7 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
 
         name = display_collection_name(collection["name"])
+        cover = self.collection_cover_url(collection["id"], collection["cover_path"])
         episodes = [
             {
                 "id": str(row["id"]),
@@ -1719,13 +1910,14 @@ class Handler(BaseHTTPRequestHandler):
                         "name": "Season 1",
                         "overview": "",
                         "season_number": 1,
-                        "cover": "",
-                        "cover_big": "",
+                        "cover": cover,
+                        "cover_big": cover,
                     }
                 ],
                 "info": {
                     "name": name,
-                    "cover": "",
+                    "cover": cover,
+                    "cover_big": cover,
                     "plot": "",
                     "cast": "",
                     "director": "",
@@ -1733,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
                     "releaseDate": "",
                     "rating": "0",
                     "rating_5based": 0,
-                    "backdrop_path": [],
+                    "backdrop_path": [cover] if cover else [],
                     "youtube_trailer": "",
                     "episode_run_time": "0",
                     "category_id": "1",
@@ -1751,13 +1943,16 @@ class Handler(BaseHTTPRequestHandler):
 
         duration_secs = int(video["duration"] or 0)
         bitrate_kbps = int((video["bitrate"] or 0) / 1000)
+        cover = self.collection_cover_url(
+            video["collection_id"], video["collection_cover_path"]
+        )
 
         self.send_json(
             200,
             {
                 "info": {
                     "imdb_id": "",
-                    "movie_image": "",
+                    "movie_image": cover,
                     "genre": "",
                     "plot": "",
                     "cast": "",
@@ -1773,13 +1968,13 @@ class Handler(BaseHTTPRequestHandler):
                     "actors": "",
                     "name": video["title"],
                     "name_o": video["title"],
-                    "cover_big": "",
+                    "cover_big": cover,
                     "description": "",
                     "age": "",
                     "rating_mpaa": "",
                     "rating_count_kinopoisk": 0,
                     "country": "",
-                    "backdrop_path": [],
+                    "backdrop_path": [cover] if cover else [],
                     "audio": [
                         {
                             "codec": video["audio_codec"] or "",
@@ -1802,6 +1997,7 @@ class Handler(BaseHTTPRequestHandler):
                     "container_extension": "m3u8",
                     "custom_sid": "",
                     "direct_source": "",
+                    "stream_icon": cover,
                 },
             },
         )
@@ -1840,7 +2036,9 @@ class Handler(BaseHTTPRequestHandler):
                 SELECT
                     v.id,
                     v.title,
-                    c.name AS collection_name
+                    v.collection_id,
+                    c.name AS collection_name,
+                    c.cover_path
                 FROM videos v
                 JOIN collections c ON c.id = v.collection_id
                 WHERE v.active = 1
@@ -1859,6 +2057,9 @@ class Handler(BaseHTTPRequestHandler):
         for row in rows:
             name = m3u_escape(row["title"])
             group = m3u_escape(display_collection_name(row["collection_name"]))
+            cover = m3u_escape(
+                self.collection_cover_url(row["collection_id"], row["cover_path"])
+            )
 
             if playlist_type == "m3u":
                 lines.append(f"#EXTINF:-1,{name}")
@@ -1867,7 +2068,7 @@ class Handler(BaseHTTPRequestHandler):
                     '#EXTINF:-1 '
                     f'tvg-id="vod-{row["id"]}" '
                     f'tvg-name="{name}" '
-                    'tvg-logo="" '
+                    f'tvg-logo="{cover}" '
                     f'group-title="{group}",'
                     f'{name}'
                 )

@@ -148,6 +148,21 @@ o XMLTV é um documento vazio válido. O MiniVOD entrega HLS (`m3u8`/`hls`);
 `output=ts` e `output=mpegts` mantêm a playlist HLS legada, pois não há
 stream MPEG-TS contínuo nesta implementação.
 
+## Capas de coleções
+
+O scanner usa imagens já presentes em cada pasta de coleção. Ele prioriza
+`cover`, `poster`, `folder` e `capa` (JPG, JPEG, PNG ou WebP), depois imagens
+na raiz, em diretórios de fotos conhecidos e, por fim, qualquer imagem válida.
+Arquivos com nomes como `thumb`, `watermark`, `preview` ou `logo` só são usados
+se não houver alternativa. A capa selecionada fica estável enquanto o arquivo
+existir; não há geração, download ou cópia para o cache.
+
+As capas são expostas em `/covers/{collection_id}` e recebem cache HTTP de um
+dia. Elas aparecem como `cover` no Series, `stream_icon` no VOD e `tvg-logo`
+no M3U Plus quando disponíveis. O painel `/admin` permite visualizar os
+candidatos existentes, selecionar uma imagem segura dentro da coleção ou
+executar novamente a seleção automática.
+
 ## Cloudflare Tunnel
 
 Não há `cloudflared` no Compose. Depois de confirmar que o MiniVOD responde em `http://IP_DO_SERVIDOR:8079`, configure no dashboard do Cloudflare Tunnel um **Public Hostname** para `vod.meudominio.com` com serviço HTTP apontando para:
