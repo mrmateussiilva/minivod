@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import getpass
 import hashlib
 import hmac
+import html
 import json
+import os
 import re
 import secrets
 import shutil
@@ -45,6 +49,8 @@ class Config:
     playlist_wait: int
     transcode_incompatible: bool
     base_url: str | None
+    admin_user: str | None
+    admin_password: str | None
 
 
 CONFIG: Config
@@ -314,6 +320,79 @@ def list_users(db_path: Path) -> None:
             f"{row['max_connections']:<5} "
             f"{exp}"
         )
+
+
+def admin_users() -> list[sqlite3.Row]:
+    with db_connect(readonly=True) as conn:
+        return conn.execute(
+            """
+            SELECT id, username, enabled, max_connections, exp_date
+            FROM xtream_users
+            ORDER BY username COLLATE NOCASE
+            """
+        ).fetchall()
+
+
+def admin_create_user(
+    username: str,
+    password: str,
+    max_connections: int,
+    expires_days: int | None,
+) -> None:
+    password_hash, salt = hash_password(password)
+    now = int(time.time())
+    exp_date = None if expires_days is None else now + expires_days * 86400
+
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO xtream_users (
+                username, password_hash, password_salt, enabled,
+                max_connections, exp_date, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                password_hash,
+                salt,
+                max_connections,
+                exp_date,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def admin_set_user_enabled(user_id: int, enabled: bool) -> bool:
+    with db_connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE xtream_users
+            SET enabled = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (1 if enabled else 0, int(time.time()), user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def admin_set_user_password(user_id: int, password: str) -> bool:
+    password_hash, salt = hash_password(password)
+
+    with db_connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE xtream_users
+            SET password_hash = ?, password_salt = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (password_hash, salt, int(time.time()), user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 # =====================================================================
@@ -592,16 +671,22 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Range, Content-Type, Authorization",
-        )
-        self.send_header(
-            "Access-Control-Expose-Headers",
-            "Content-Length, Content-Range",
-        )
-        self.send_header("Cache-Control", "no-cache")
+        is_admin = urlparse(self.path).path.startswith("/admin")
+        if is_admin:
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Range, Content-Type, Authorization",
+            )
+            self.send_header(
+                "Access-Control-Expose-Headers",
+                "Content-Length, Content-Range",
+            )
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def base_url(self) -> str:
@@ -699,6 +784,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, query = self.request_params()
 
+        if path.startswith("/admin"):
+            if not self.require_admin():
+                return
+            self.handle_admin_post(path)
+            return
+
         if path != "/player_api.php":
             self.send_json(404, {"error": "rota não encontrada"})
             return
@@ -710,6 +801,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path, query = self.request_params()
+
+        if path.startswith("/admin"):
+            if not self.require_admin():
+                return
+            if path == "/admin":
+                self.handle_admin()
+            else:
+                self.send_json(404, {"error": "rota não encontrada"})
+            return
 
         if path == "/":
             self.handle_root()
@@ -802,6 +902,151 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             },
         )
+
+    # -----------------------------------------------------------------
+    # Admin
+    # -----------------------------------------------------------------
+
+    def require_admin(self) -> bool:
+        if not CONFIG.admin_user or not CONFIG.admin_password:
+            self.send_json(404, {"error": "rota não encontrada"})
+            return False
+
+        authorization = self.headers.get("Authorization", "")
+        authenticated = False
+        if authorization.startswith("Basic "):
+            try:
+                raw = base64.b64decode(
+                    authorization[6:], validate=True
+                ).decode("utf-8")
+                username, password = raw.split(":", 1)
+                authenticated = (
+                    hmac.compare_digest(username, CONFIG.admin_user)
+                    and hmac.compare_digest(password, CONFIG.admin_password)
+                )
+            except (ValueError, UnicodeDecodeError, binascii.Error):
+                authenticated = False
+
+        if authenticated:
+            return True
+
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="MiniVOD Admin"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
+    def send_admin_html(self, status: int, content: str) -> None:
+        self.send_text(status, content, "text/html; charset=utf-8")
+
+    def admin_page(self, error: str | None = None) -> str:
+        rows = admin_users()
+        user_rows: list[str] = []
+        for row in rows:
+            user_id = int(row["id"])
+            username = html.escape(str(row["username"]))
+            status = "Ativo" if int(row["enabled"]) else "Desativado"
+            expires = "Nunca expira"
+            if row["exp_date"] is not None:
+                expires = datetime.fromtimestamp(
+                    int(row["exp_date"]), tz=timezone.utc
+                ).strftime("%Y-%m-%d")
+            action = "disable" if int(row["enabled"]) else "enable"
+            action_label = "Desativar" if action == "disable" else "Habilitar"
+            user_rows.append(
+                f"<tr><td>{username}</td><td>{status}</td>"
+                f"<td>Máx: {int(row['max_connections'])}</td>"
+                f"<td>{expires}</td><td>"
+                f"<form method=\"post\" action=\"/admin/users/{user_id}/{action}\">"
+                f"<button>{action_label}</button></form>"
+                f"<form method=\"post\" action=\"/admin/users/{user_id}/password\">"
+                "<input type=\"password\" name=\"password\" minlength=\"6\" "
+                "required placeholder=\"Nova senha\">"
+                "<button>Alterar senha</button></form>"
+                "</td></tr>"
+            )
+
+        error_html = ""
+        if error:
+            error_html = f"<p class=\"error\">{html.escape(error)}</p>"
+        users_html = "".join(user_rows) or "<tr><td colspan=\"5\">Nenhum usuário.</td></tr>"
+        return f"""<!doctype html>
+<html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><title>MiniVOD Admin</title>
+<style>body{{background:#111;color:#ddd;font:14px sans-serif;max-width:960px;margin:32px auto;padding:0 16px}}table{{width:100%;border-collapse:collapse}}td,th{{border-bottom:1px solid #444;padding:10px;text-align:left}}form{{display:inline-block;margin:2px}}input{{background:#222;border:1px solid #555;color:#eee;padding:7px}}button{{background:#333;border:1px solid #666;color:#eee;padding:7px;cursor:pointer}}button:hover{{background:#444}}.error{{color:#ff8f8f}}section{{border-top:1px solid #555;margin-top:24px;padding-top:16px}}label{{display:block;margin:10px 0 4px}}</style>
+</head><body><h1>MiniVOD Admin</h1>{error_html}<section><h2>Usuários</h2>
+<table><thead><tr><th>Usuário</th><th>Status</th><th>Conexões</th><th>Expiração</th><th>Ações</th></tr></thead><tbody>{users_html}</tbody></table></section>
+<section><h2>Novo usuário</h2><form method=\"post\" action=\"/admin/users\"><label>Usuário</label><input name=\"username\" minlength=\"3\" maxlength=\"64\" required pattern=\"[A-Za-z0-9._-]+\"><label>Senha</label><input type=\"password\" name=\"password\" minlength=\"6\" required><label>Máximo de conexões</label><input type=\"number\" name=\"max_connections\" value=\"1\" min=\"1\" required><label>Expira em dias</label><input type=\"number\" name=\"expires_days\" min=\"1\"><p><button>Criar usuário</button></p></form></section>
+</body></html>"""
+
+    def handle_admin(self) -> None:
+        self.send_admin_html(200, self.admin_page())
+
+    def redirect_admin(self) -> None:
+        self.send_response(303)
+        self.send_header("Location", "/admin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def form_value(self, form: dict[str, list[str]], name: str) -> str:
+        return form.get(name, [""])[0].strip()
+
+    def handle_admin_post(self, path: str) -> None:
+        form = self.read_form_body()
+        if path == "/admin/users":
+            self.handle_admin_create_user(form)
+            return
+
+        match = re.fullmatch(r"/admin/users/(\d+)/(enable|disable)", path)
+        if match:
+            if not admin_set_user_enabled(
+                int(match.group(1)), match.group(2) == "enable"
+            ):
+                self.send_admin_html(404, self.admin_page("Usuário não encontrado."))
+                return
+            self.redirect_admin()
+            return
+
+        match = re.fullmatch(r"/admin/users/(\d+)/password", path)
+        if match:
+            password = self.form_value(form, "password")
+            if len(password) < 6:
+                self.send_admin_html(400, self.admin_page("A senha deve ter ao menos 6 caracteres."))
+                return
+            if not admin_set_user_password(int(match.group(1)), password):
+                self.send_admin_html(404, self.admin_page("Usuário não encontrado."))
+                return
+            self.redirect_admin()
+            return
+
+        self.send_json(404, {"error": "rota não encontrada"})
+
+    def handle_admin_create_user(self, form: dict[str, list[str]]) -> None:
+        username = self.form_value(form, "username")
+        password = self.form_value(form, "password")
+        max_connections = self.form_value(form, "max_connections")
+        expires_days = self.form_value(form, "expires_days")
+
+        if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username):
+            self.send_admin_html(400, self.admin_page("Usuário inválido."))
+            return
+        if len(password) < 6:
+            self.send_admin_html(400, self.admin_page("A senha deve ter ao menos 6 caracteres."))
+            return
+        try:
+            max_value = int(max_connections)
+            expires_value = int(expires_days) if expires_days else None
+            if max_value < 1 or (expires_value is not None and expires_value < 1):
+                raise ValueError
+        except ValueError:
+            self.send_admin_html(400, self.admin_page("Conexões e expiração devem ser números positivos."))
+            return
+
+        try:
+            admin_create_user(username, password, max_value, expires_value)
+        except sqlite3.IntegrityError:
+            self.send_admin_html(409, self.admin_page("Este usuário já existe."))
+            return
+        self.redirect_admin()
 
     # -----------------------------------------------------------------
     # Base API
@@ -1564,6 +1809,18 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--admin-user",
+        default=os.environ.get("MINIVOD_ADMIN_USER"),
+        help="usuário do painel administrativo (opcional)",
+    )
+
+    parser.add_argument(
+        "--admin-password",
+        default=os.environ.get("MINIVOD_ADMIN_PASSWORD"),
+        help="senha do painel administrativo (opcional)",
+    )
+
+    parser.add_argument(
         "--segment-time",
         type=int,
         default=6,
@@ -1672,6 +1929,8 @@ def main() -> None:
         playlist_wait=max(1, args.playlist_wait),
         transcode_incompatible=not args.copy_only,
         base_url=args.base_url,
+        admin_user=args.admin_user or None,
+        admin_password=args.admin_password or None,
     )
 
     # Cria schema de usuários antes de entrar em modo leitura.

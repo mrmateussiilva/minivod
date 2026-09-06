@@ -62,10 +62,29 @@ MINIVOD_DATA=/home/server/downloads
 MINIVOD_CACHE=/home/server/vod-cache
 MINIVOD_PORT=8079
 MINIVOD_BASE_URL=http://192.168.15.7:8079
+MINIVOD_ADMIN_USER=admin
+MINIVOD_ADMIN_PASSWORD=uma-senha-forte
 SCAN_INTERVAL=300
 ```
 
 Dentro dos containers, `MINIVOD_DATA` é montado em `/data` (`/data/iptv` e `/data/vod.db`) e `MINIVOD_CACHE` em `/cache`. O servidor escuta em `0.0.0.0:8079`; a porta publicada no host é controlada por `MINIVOD_PORT`.
+
+## Painel administrativo
+
+Com as duas variáveis abaixo preenchidas, o painel fica disponível em `https://vod.seudominio.com/admin` ou em `http://IP_DO_SERVIDOR:8079/admin`. O navegador solicitará autenticação HTTP Basic.
+
+```env
+MINIVOD_ADMIN_USER=admin
+MINIVOD_ADMIN_PASSWORD=uma-senha-forte
+```
+
+Depois de alterar `.env`, aplique a configuração:
+
+```bash
+docker compose up -d
+```
+
+Se `MINIVOD_ADMIN_PASSWORD` ficar vazia, o painel permanece desabilitado.
 
 ## Usuários Xtream
 

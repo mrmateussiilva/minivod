@@ -20,6 +20,10 @@ services:
       - "8079"
       - --base-url
       - ${MINIVOD_BASE_URL}
+      - --admin-user
+      - ${MINIVOD_ADMIN_USER:-}
+      - --admin-password
+      - ${MINIVOD_ADMIN_PASSWORD:-}
     healthcheck:
       test:
         - CMD
