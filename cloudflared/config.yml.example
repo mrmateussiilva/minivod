@@ -1,0 +1,8 @@
+# Se você já possui um tunnel, substitua os valores abaixo.
+tunnel: SEU_TUNNEL_UUID
+credentials-file: /home/server/.cloudflared/SEU_TUNNEL_UUID.json
+
+ingress:
+  - hostname: vod.seudominio.com
+    service: http://127.0.0.1:8079
+  - service: http_status:404

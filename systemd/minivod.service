@@ -1,0 +1,19 @@
+[Unit]
+Description=MiniVOD HLS + Xtream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server
+Group=server
+WorkingDirectory=/opt/minivod
+ExecStart=/opt/minivod/scripts/run-server.sh
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

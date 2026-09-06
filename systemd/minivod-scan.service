@@ -1,0 +1,9 @@
+[Unit]
+Description=MiniVOD library scan
+
+[Service]
+Type=oneshot
+User=server
+Group=server
+WorkingDirectory=/opt/minivod
+ExecStart=/opt/minivod/scripts/scan.sh
