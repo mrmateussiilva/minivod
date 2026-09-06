@@ -30,7 +30,7 @@ services:
       test:
         - CMD
         - python3
-        - -c
+        - "-c"
         - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8079/health').read()"
       interval: 30s
       timeout: 5s
@@ -44,7 +44,7 @@ services:
       - ${MINIVOD_DATA}:/data
     command:
       - /bin/sh
-      - -c
+      - "-c"
       - >-
         while true; do
           python3 /app/scan_vod.py /data/iptv --db /data/vod.db;
