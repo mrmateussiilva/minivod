@@ -790,7 +790,7 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_admin_post(path)
             return
 
-        if path != "/player_api.php":
+        if path not in {"/player_api.php", "/player_api"}:
             self.send_json(404, {"error": "rota não encontrada"})
             return
 
@@ -823,12 +823,20 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_collections()
             return
 
-        if path == "/player_api.php":
+        if path in {"/player_api.php", "/player_api"}:
             self.handle_player_api(query)
             return
 
-        if path == "/get.php":
+        if path in {"/get.php", "/get"}:
             self.handle_get_php(query)
+            return
+
+        if path in {"/xmltv.php", "/xmltv"}:
+            self.handle_xmltv(query)
+            return
+
+        if path == "/compat":
+            self.handle_compat()
             return
 
         match = re.fullmatch(r"/collections/(\d+)/videos", path)
@@ -872,6 +880,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         match = re.fullmatch(
+            r"/movie/([^/]+)/([^/]+)/(\d+)",
+            path,
+        )
+        if match:
+            self.handle_xtream_movie_playlist(
+                unquote(match.group(1)),
+                unquote(match.group(2)),
+                int(match.group(3)),
+            )
+            return
+
+        match = re.fullmatch(
             r"/movie/([^/]+)/([^/]+)/(\d+)/(segment-\d{6}\.ts)",
             path,
         )
@@ -898,6 +918,8 @@ class Handler(BaseHTTPRequestHandler):
                     "/vod/{id}/status",
                     "/player_api.php",
                     "/get.php",
+                    "/xmltv.php",
+                    "/compat",
                     "/movie/{username}/{password}/{id}.m3u8",
                 ],
             },
@@ -1683,6 +1705,40 @@ class Handler(BaseHTTPRequestHandler):
             200,
             "\n".join(lines) + "\n",
             "audio/x-mpegurl; charset=utf-8",
+        )
+
+    def handle_xmltv(self, params: dict[str, list[str]]) -> None:
+        _, _, user = self.auth_from_params(params)
+
+        if user is None:
+            self.send_text(
+                401,
+                "Unauthorized\n",
+                "text/plain; charset=utf-8",
+            )
+            return
+
+        self.send_text(
+            200,
+            '<?xml version="1.0" encoding="UTF-8"?>\n<tv></tv>\n',
+            "application/xml; charset=utf-8",
+        )
+
+    def handle_compat(self) -> None:
+        self.send_json(
+            200,
+            {
+                "xtream": True,
+                "vod": True,
+                "live": False,
+                "series": False,
+                "epg": False,
+                "endpoints": {
+                    "player_api": "/player_api.php",
+                    "playlist": "/get.php",
+                    "xmltv": "/xmltv.php",
+                },
+            },
         )
 
     def handle_xtream_movie_playlist(

@@ -107,6 +107,26 @@ docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --enabl
 docker compose exec minivod python3 /app/hls_server.py --db /data/vod.db --disable-user cliente01
 ```
 
+## Compatibilidade IPTV
+
+O MiniVOD oferece VOD por API compatível com Xtream:
+
+```text
+https://vod.atrasado.online/player_api.php
+https://vod.atrasado.online/get.php
+https://vod.atrasado.online/xmltv.php
+```
+
+No player Xtream:
+
+```text
+Server:   https://vod.atrasado.online
+Username: cliente01
+Password: ********
+```
+
+Live, Series e EPG real não são implementados. Para maior compatibilidade, as ações consultadas por players para esses recursos retornam respostas vazias válidas; o foco do MiniVOD continua sendo VOD. Também são aceitos os aliases `/player_api`, `/get`, `/xmltv` e `/movie/{username}/{password}/{id}`.
+
 ## Cloudflare Tunnel
 
 Não há `cloudflared` no Compose. Depois de confirmar que o MiniVOD responde em `http://IP_DO_SERVIDOR:8079`, configure no dashboard do Cloudflare Tunnel um **Public Hostname** para `vod.meudominio.com` com serviço HTTP apontando para:
