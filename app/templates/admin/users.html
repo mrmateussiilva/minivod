@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}Usuários Xtream &middot; MiniVOD Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
+    <div>
+        <h1 class="h3 mb-0 fw-bold">Usuários Xtream</h1>
+        <p class="text-muted small mb-0">Gerencie as credenciais e permissões para players IPTV compatíveis.</p>
+    </div>
+    <div>
+        <button type="button" class="btn btn-primary btn-sm d-flex align-items-center gap-1 shadow-sm" data-bs-toggle="modal" data-bs-target="#newUserModal">
+            <i class="bi bi-person-plus-fill"></i> Novo Usuário
+        </button>
+    </div>
+</div>
+
+<div class="card shadow-sm">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th style="width: 70px;">ID</th>
+                    <th>Nome de Usuário</th>
+                    <th>Status</th>
+                    <th>Conexões Máx.</th>
+                    <th>Expiração</th>
+                    <th>Criado em</th>
+                    <th class="text-end" style="width: 240px;">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td class="text-muted">#{{ user.id }}</td>
+                    <td>
+                        <span class="fw-bold fs-6 text-light">{{ user.username }}</span>
+                    </td>
+                    <td>
+                        {% if user.is_expired %}
+                        <span class="badge text-bg-danger">Expirado</span>
+                        {% elif user.enabled %}
+                        <span class="badge text-bg-success">Ativo</span>
+                        {% else %}
+                        <span class="badge text-bg-secondary">Desativado</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge bg-secondary-subtle text-secondary-emphasis">
+                            {{ user.max_connections }} tela(s)
+                        </span>
+                    </td>
+                    <td>
+                        <span class="small">{{ user.expires_str }}</span>
+                    </td>
+                    <td>
+                        <span class="small text-muted">{{ user.created_at }}</span>
+                    </td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm" role="group">
+                            <!-- Toggle Enabled Form -->
+                            <form method="post" action="/admin/users/{{ user.id }}/{% if user.enabled %}disable{% else %}enable{% endif %}" class="d-inline">
+                                <button type="submit" class="btn btn-outline-{% if user.enabled %}warning{% else %}success{% endif %}">
+                                    {% if user.enabled %}Desativar{% else %}Habilitar{% endif %}
+                                </button>
+                            </form>
+
+                            <!-- Password Modal Trigger -->
+                            <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#changePassModal{{ user.id }}">
+                                <i class="bi bi-key"></i> Senha
+                            </button>
+                        </div>
+
+                        <!-- Change Password Modal for this User -->
+                        <div class="modal fade text-start" id="changePassModal{{ user.id }}" tabindex="-1" aria-labelledby="changePassLabel{{ user.id }}" aria-hidden="true">
+                            <div class="modal-dialog modal-dialog-centered">
+                                <div class="modal-content card border-secondary-subtle">
+                                    <form method="post" action="/admin/users/{{ user.id }}/password">
+                                        <div class="modal-header border-secondary-subtle">
+                                            <h5 class="modal-title fw-bold" id="changePassLabel{{ user.id }}">
+                                                Alterar Senha: <span class="text-primary">{{ user.username }}</span>
+                                            </h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <div class="mb-3">
+                                                <label class="form-label small text-muted">Nova Senha</label>
+                                                <input type="password" name="password" minlength="6" required class="form-control" placeholder="Mínimo de 6 caracteres">
+                                            </div>
+                                        </div>
+                                        <div class="modal-footer border-secondary-subtle">
+                                            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                                            <button type="submit" class="btn btn-primary btn-sm">Salvar Nova Senha</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="text-center py-5 text-muted">
+                        <i class="bi bi-people fs-1 d-block mb-2"></i>
+                        Nenhum usuário cadastrado. Clique em <strong>Novo Usuário</strong> para adicionar.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal: New User -->
+<div class="modal fade" id="newUserModal" tabindex="-1" aria-labelledby="newUserModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content card border-secondary-subtle">
+            <form method="post" action="/admin/users">
+                <div class="modal-header border-secondary-subtle">
+                    <h5 class="modal-title fw-bold d-flex align-items-center gap-2" id="newUserModalLabel">
+                        <i class="bi bi-person-plus-fill text-primary"></i> Cadastrar Novo Usuário Xtream
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Nome de Usuário</label>
+                        <input type="text" name="username" minlength="3" maxlength="64" required pattern="[A-Za-z0-9._-]+" class="form-control" placeholder="Ex: cliente01">
+                        <div class="form-text text-muted small">Letras, números e caracteres <code>.</code>, <code>_</code>, <code>-</code> (3 a 64 chars).</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Senha</label>
+                        <input type="password" name="password" minlength="6" required class="form-control" placeholder="Mínimo 6 caracteres">
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Máx. Conexões</label>
+                            <input type="number" name="max_connections" value="1" min="1" max="20" required class="form-control">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Validade (Dias)</label>
+                            <input type="number" name="expires_days" min="1" class="form-control" placeholder="Vazio = Sem expiração">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary-subtle">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary btn-sm">Criar Usuário</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

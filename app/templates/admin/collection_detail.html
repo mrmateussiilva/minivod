@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}{{ collection.name }} &middot; MiniVOD Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
+    <div class="d-flex align-items-center gap-3">
+        <a href="/admin/collections" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Voltar
+        </a>
+        <div>
+            <h1 class="h3 mb-0 fw-bold">{{ collection.name }}</h1>
+            <span class="text-muted small">Caminho: <code>{{ collection.path or 'Raiz' }}</code></span>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="/admin/collections/{{ collection.id }}/covers" class="btn btn-primary btn-sm d-flex align-items-center gap-1">
+            <i class="bi bi-image"></i> Escolher Capa
+        </a>
+        <form method="post" action="/admin/collections/{{ collection.id }}/cover-auto" class="d-inline">
+            <button type="submit" class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1">
+                <i class="bi bi-magic"></i> Auto
+            </button>
+        </form>
+        {% if collection.has_cover %}
+        <form method="post" action="/admin/collections/{{ collection.id }}/cover-remove" class="d-inline" onsubmit="return confirm('Deseja realmente desvincular a capa desta coleção?');">
+            <button type="submit" class="btn btn-outline-danger btn-sm d-flex align-items-center gap-1">
+                <i class="bi bi-trash"></i> Remover Capa
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <!-- Cover & Basic Info -->
+    <div class="col-12 col-md-4 col-lg-3">
+        <div class="card p-3 text-center shadow-sm">
+            {% if collection.has_cover %}
+            <img src="{{ collection.cover_url }}" alt="{{ collection.name }}" class="img-fluid rounded mb-3 shadow" style="aspect-ratio: 2/3; object-fit: cover;">
+            <span class="badge text-bg-success py-1 px-2 d-inline-block mb-2">Capa Ativa</span>
+            {% else %}
+            <div class="rounded d-flex flex-column align-items-center justify-content-center bg-secondary bg-opacity-10 py-5 mb-3" style="aspect-ratio: 2/3;">
+                <i class="bi bi-image text-muted fs-1 mb-2"></i>
+                <span class="text-muted small">Nenhuma imagem selecionada</span>
+            </div>
+            <a href="/admin/collections/{{ collection.id }}/covers" class="btn btn-sm btn-outline-primary mb-2">
+                Selecionar Imagem
+            </a>
+            {% endif %}
+            <div class="text-muted small mt-2">
+                <strong>{{ collection.total_videos }}</strong> vídeos cadastrados
+            </div>
+        </div>
+    </div>
+
+    <!-- Videos in this Collection -->
+    <div class="col-12 col-md-8 col-lg-9">
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent py-3 d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0 fw-bold">Vídeos da Coleção</h5>
+                <span class="badge text-bg-secondary">{{ collection.total_videos }} vídeos</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Título / Arquivo</th>
+                            <th>Duração</th>
+                            <th>Tamanho</th>
+                            <th>Resolução</th>
+                            <th>Codec</th>
+                            <th class="text-end">Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for video in collection.videos %}
+                        <tr>
+                            <td>
+                                <a href="/admin/videos/{{ video.id }}" class="fw-bold text-decoration-none text-light">
+                                    {{ video.title }}
+                                </a>
+                                <div class="text-muted small text-truncate" style="max-width: 300px;">
+                                    {{ video.filename }}
+                                </div>
+                            </td>
+                            <td>{{ video.duration_formatted }}</td>
+                            <td>{{ video.size_formatted }}</td>
+                            <td><code>{{ video.resolution }}</code></td>
+                            <td><span class="badge bg-secondary-subtle text-secondary-emphasis">{{ video.video_codec }}</span></td>
+                            <td class="text-end">
+                                <a href="/admin/videos/{{ video.id }}" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-play-circle"></i> Detalhes
+                                </a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="6" class="text-center py-4 text-muted">
+                                Nenhum vídeo ativo nesta coleção.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination -->
+            {% if collection.total_pages > 1 %}
+            <div class="card-footer bg-transparent py-3">
+                <nav aria-label="Navegação da coleção">
+                    <ul class="pagination pagination-sm justify-content-center mb-0">
+                        <li class="page-item {% if collection.page <= 1 %}disabled{% endif %}">
+                            <a class="page-link" href="?page={{ collection.page - 1 }}&per_page={{ collection.per_page }}">Anterior</a>
+                        </li>
+                        {% for p in range(1, collection.total_pages + 1) %}
+                        {% if p == collection.page %}
+                        <li class="page-item active"><span class="page-link">{{ p }}</span></li>
+                        {% elif p <= 3 or p >= collection.total_pages - 2 or (p >= collection.page - 1 and p <= collection.page + 1) %}
+                        <li class="page-item"><a class="page-link" href="?page={{ p }}&per_page={{ collection.per_page }}">{{ p }}</a></li>
+                        {% elif p == 4 or p == collection.total_pages - 3 %}
+                        <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+                        {% endif %}
+                        {% endfor %}
+                        <li class="page-item {% if collection.page >= collection.total_pages %}disabled{% endif %}">
+                            <a class="page-link" href="?page={{ collection.page + 1 }}&per_page={{ collection.per_page }}">Próxima</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

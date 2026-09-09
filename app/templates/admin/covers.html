@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Selecionar Capa: {{ collection_name }} &middot; MiniVOD Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
+    <div class="d-flex align-items-center gap-3">
+        <a href="/admin/collections/{{ collection_id }}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Voltar à Coleção
+        </a>
+        <div>
+            <h1 class="h3 mb-0 fw-bold">Imagens Candidatas</h1>
+            <span class="text-muted small">Coleção: <strong>{{ collection_name }}</strong> &middot; {{ total_candidates }} imagens encontradas na pasta</span>
+        </div>
+    </div>
+    <div>
+        <form method="post" action="/admin/collections/{{ collection_id }}/cover-auto" class="d-inline">
+            <button type="submit" class="btn btn-outline-primary btn-sm d-flex align-items-center gap-1">
+                <i class="bi bi-magic"></i> Auto-Selecionar Melhor Capa
+            </button>
+        </form>
+    </div>
+</div>
+
+{% if candidates %}
+<div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-6 g-3 mb-4">
+    {% for img in candidates %}
+    <div class="col">
+        <div class="card h-100 shadow-sm border-secondary-subtle text-center p-2">
+            <img src="{{ img.preview_url }}" alt="" class="cover-picker-img mb-2 shadow-sm" loading="lazy">
+            <div class="text-truncate small text-muted mb-2 px-1" title="{{ img.relative_path }}">
+                {{ img.relative_path }}
+            </div>
+            <form method="post" action="/admin/collections/{{ collection_id }}/cover" class="mt-auto">
+                <input type="hidden" name="cover" value="{{ img.relative_path }}">
+                <button type="submit" class="btn btn-primary btn-sm w-100 d-flex align-items-center justify-content-center gap-1">
+                    <i class="bi bi-check2"></i> Selecionar
+                </button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<nav aria-label="Navegação de capas">
+    <ul class="pagination justify-content-center mb-0">
+        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page - 1 }}">Anterior</a>
+        </li>
+        {% for p in range(1, total_pages + 1) %}
+        <li class="page-item {% if p == page %}active{% endif %}">
+            <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+        </li>
+        {% endfor %}
+        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page + 1 }}">Próxima</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="card shadow-sm p-5 text-center text-muted">
+    <i class="bi bi-image fs-1 d-block mb-3 text-secondary"></i>
+    <h4>Nenhuma imagem encontrada</h4>
+    <p class="mb-0">Não foram encontrados arquivos de imagem (JPG, PNG, WebP) no diretório desta coleção.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -12,7 +12,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from cover_support import ensure_cover_column, find_collection_cover, is_image_file
+try:
+    from .cover_support import ensure_cover_column, find_collection_cover, is_image_file
+except ImportError:  # Direct scanner CLI execution keeps working.
+    from cover_support import ensure_cover_column, find_collection_cover, is_image_file
 
 
 VIDEO_EXTENSIONS = {

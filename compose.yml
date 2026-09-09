@@ -8,24 +8,14 @@ services:
       - ${MINIVOD_DATA}:/data
       - ${MINIVOD_CACHE}:/cache
     command:
-      - python3
-      - /app/hls_server.py
-      - --db
-      - /data/vod.db
-      - --cache
-      - /cache
+      - uvicorn
+      - app.main:app
       - --host
       - 0.0.0.0
       - --port
       - "8079"
-      - --base-url
-      - ${MINIVOD_BASE_URL}
-      - --admin-user
-      - ${MINIVOD_ADMIN_USER:-}
-      - --admin-password
-      - ${MINIVOD_ADMIN_PASSWORD:-}
-      - --max-ffmpeg-jobs
-      - ${MINIVOD_MAX_FFMPEG_JOBS:-2}
+      - --workers
+      - "1"
     healthcheck:
       test:
         - CMD
@@ -36,6 +26,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    environment:
+      MINIVOD_DB: /data/vod.db
+      MINIVOD_CACHE: /cache
+      MINIVOD_BASE_URL: ${MINIVOD_BASE_URL}
+      MINIVOD_ADMIN_USER: ${MINIVOD_ADMIN_USER:-}
+      MINIVOD_ADMIN_PASSWORD: ${MINIVOD_ADMIN_PASSWORD:-}
+      MINIVOD_MAX_FFMPEG_JOBS: ${MINIVOD_MAX_FFMPEG_JOBS:-2}
 
   scanner:
     build: .

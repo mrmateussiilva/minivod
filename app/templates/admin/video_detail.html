@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}{{ video.title }} &middot; MiniVOD Admin{% endblock %}
+
+{% block extra_head %}
+<!-- Hls.js for cross-browser desktop HLS playback -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
+    <div class="d-flex align-items-center gap-3">
+        <a href="/admin/videos" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Voltar ao Catálogo
+        </a>
+        <div>
+            <h1 class="h3 mb-0 fw-bold">{{ video.title }}</h1>
+            <span class="text-muted small">Coleção: 
+                {% if video.collection_id %}
+                <a href="/admin/collections/{{ video.collection_id }}" class="text-info text-decoration-none">
+                    {{ video.collection_name }}
+                </a>
+                {% else %}
+                Sem Coleção
+                {% endif %}
+            </span>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ video.hls_url }}" target="_blank" class="btn btn-outline-primary btn-sm d-flex align-items-center gap-1">
+            <i class="bi bi-box-arrow-up-right"></i> Playlist HLS Direta
+        </a>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <!-- Video Player Column -->
+    <div class="col-12 col-lg-7">
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-transparent py-3 d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-play-btn text-primary"></i> Player de Teste HLS
+                </h5>
+                <span class="badge {% if video.cache_exists %}text-bg-success{% else %}text-bg-warning{% endif %}">
+                    {% if video.cache_exists %}Cache Disponível ({{ video.segments_count }} segmentos){% else %}Sob Demanda{% endif %}
+                </span>
+            </div>
+            <div class="card-body p-0 bg-black">
+                <div class="ratio ratio-16x9">
+                    <video id="hls-player" controls preload="metadata" class="w-100 h-100"></video>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent py-2 text-muted small d-flex justify-content-between">
+                <span>Stream: <code>{{ video.hls_url }}</code></span>
+                <span id="player-status" class="text-info">Iniciando Hls.js...</span>
+            </div>
+        </div>
+
+        <!-- FFprobe Errors if any -->
+        {% if video.probe_error %}
+        <div class="alert alert-danger shadow-sm" role="alert">
+            <h6 class="alert-heading fw-bold d-flex align-items-center gap-2">
+                <i class="bi bi-exclamation-octagon-fill"></i> Erro na Sonda FFprobe
+            </h6>
+            <pre class="small mb-0 text-break">{{ video.probe_error }}</pre>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Metadata Technical Details -->
+    <div class="col-12 col-lg-5">
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-transparent py-3">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-info-circle text-info"></i> Metadados Técnicos
+                </h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <tbody>
+                        <tr>
+                            <th class="ps-3 text-muted" style="width: 140px;">ID do Vídeo</th>
+                            <td class="pe-3">#{{ video.id }}</td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Status</th>
+                            <td class="pe-3">
+                                {% if video.active %}
+                                <span class="badge text-bg-success">Ativo</span>
+                                {% else %}
+                                <span class="badge text-bg-secondary">Inativo</span>
+                                {% endif %}
+                                {% if video.probe_ok %}
+                                <span class="badge text-bg-info">Sonda OK</span>
+                                {% else %}
+                                <span class="badge text-bg-danger">Sonda com Erro</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Duração</th>
+                            <td class="pe-3 fw-bold">{{ video.duration_formatted }}</td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Tamanho</th>
+                            <td class="pe-3">{{ video.size_formatted }} ({{ video.size_bytes }} bytes)</td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Resolução</th>
+                            <td class="pe-3"><code>{{ video.resolution }}</code></td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Codec de Vídeo</th>
+                            <td class="pe-3"><span class="badge bg-secondary-subtle text-secondary-emphasis">{{ video.video_codec }}</span></td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Codec de Áudio</th>
+                            <td class="pe-3"><span class="badge bg-secondary-subtle text-secondary-emphasis">{{ video.audio_codec }}</span></td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Taxa de Quadros</th>
+                            <td class="pe-3">{{ video.fps }} fps</td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Taxa de Bits</th>
+                            <td class="pe-3">{{ video.bitrate_formatted }}</td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Container</th>
+                            <td class="pe-3"><code>{{ video.format_name }}</code></td>
+                        </tr>
+                        <tr>
+                            <th class="ps-3 text-muted">Data de Adição</th>
+                            <td class="pe-3 small text-muted">{{ video.created_at }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- File System Paths -->
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent py-3">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-hdd text-warning"></i> Arquivo no Servidor
+                </h5>
+            </div>
+            <div class="card-body small">
+                <div class="mb-3">
+                    <span class="text-muted d-block">Nome do Arquivo:</span>
+                    <span class="fw-bold">{{ video.filename }}</span>
+                </div>
+                <div class="mb-3">
+                    <span class="text-muted d-block">Caminho Relativo:</span>
+                    <code class="text-break">{{ video.relative_path }}</code>
+                </div>
+                <div>
+                    <span class="text-muted d-block">Caminho Absoluto:</span>
+                    <code class="text-break">{{ video.path }}</code>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const video = document.getElementById('hls-player');
+    const status = document.getElementById('player-status');
+    const hlsUrl = '{{ video.hls_url }}';
+
+    if (Hls.isSupported()) {
+        const hls = new Hls({
+            debug: false,
+            enableWorker: true,
+            lowLatencyMode: false,
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, function () {
+            status.textContent = 'Playlist pronta para reprodução.';
+            status.className = 'text-success';
+        });
+
+        hls.on(Hls.Events.ERROR, function (event, data) {
+            if (data.fatal) {
+                switch (data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                        status.textContent = 'Aguardando geração do stream HLS...';
+                        status.className = 'text-warning';
+                        setTimeout(() => hls.startLoad(), 2000);
+                        break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                        status.textContent = 'Erro de decodificação de mídia.';
+                        status.className = 'text-danger';
+                        hls.recoverMediaError();
+                        break;
+                    default:
+                        status.textContent = 'Não foi possível carregar o stream HLS.';
+                        status.className = 'text-danger';
+                        hls.destroy();
+                        break;
+                }
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = hlsUrl;
+        status.textContent = 'HLS Nativo ativo (Safari/iOS).';
+        status.className = 'text-success';
+    } else {
+        status.textContent = 'Seu navegador não suporta reprodução HLS.';
+        status.className = 'text-danger';
+    }
+});
+</script>
+{% endblock %}

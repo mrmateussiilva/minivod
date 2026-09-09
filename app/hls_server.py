@@ -26,14 +26,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from cover_support import (
-    ensure_cover_column,
-    find_collection_cover,
-    find_collection_cover_candidates,
-    image_content_type,
-    is_image_file,
-    is_within,
-)
+try:
+    from .cover_support import (
+        ensure_cover_column, find_collection_cover,
+        find_collection_cover_candidates, image_content_type, is_image_file,
+        is_within,
+    )
+except ImportError:  # Direct CLI execution keeps working.
+    from cover_support import (
+        ensure_cover_column, find_collection_cover,
+        find_collection_cover_candidates, image_content_type, is_image_file,
+        is_within,
+    )
 
 
 SEGMENT_RE = re.compile(r"^segment-\d{6}\.ts$")
@@ -123,11 +127,15 @@ def init_xtream_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_xtream_users_username
             ON xtream_users(username);
-
-        CREATE INDEX IF NOT EXISTS idx_videos_collection_active
-            ON videos(collection_id, active);
         """
     )
+    has_videos = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='videos'"
+    ).fetchone()
+    if has_videos:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_videos_collection_active ON videos(collection_id, active)"
+        )
     conn.commit()
 
 

@@ -34,7 +34,7 @@ def ensure_cover_column(conn: sqlite3.Connection) -> None:
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in conn.execute("PRAGMA table_info(collections)")
     }
-    if "cover_path" not in columns:
+    if columns and "cover_path" not in columns:
         conn.execute("ALTER TABLE collections ADD COLUMN cover_path TEXT")
         conn.commit()
 

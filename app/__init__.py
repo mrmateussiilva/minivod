@@ -1,0 +1,1 @@
+"""MiniVOD application package."""

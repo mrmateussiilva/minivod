@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard &middot; MiniVOD Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
+    <div>
+        <h1 class="h3 mb-0 fw-bold">Dashboard</h1>
+        <p class="text-muted small mb-0">Visão geral do catálogo, armazenamento e clientes Xtream.</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="/admin/videos" class="btn btn-outline-primary btn-sm d-flex align-items-center gap-1">
+            <i class="bi bi-film"></i> Ver Catálogo
+        </a>
+        <a href="/admin/users" class="btn btn-primary btn-sm d-flex align-items-center gap-1">
+            <i class="bi bi-person-plus"></i> Novo Usuário
+        </a>
+    </div>
+</div>
+
+<!-- Metrics Cards -->
+<div class="row g-3 mb-4">
+    <!-- Videos -->
+    <div class="col-12 col-sm-6 col-xl-3">
+        <div class="card h-100 p-3 shadow-sm">
+            <div class="d-flex align-items-center justify-content-between">
+                <div>
+                    <span class="text-muted text-uppercase fw-semibold small">Vídeos Ativos</span>
+                    <h2 class="display-6 fw-bold my-1 text-primary">{{ stats.total_videos }}</h2>
+                    <span class="text-muted small">Indexados no SQLite</span>
+                </div>
+                <div class="stat-icon bg-primary bg-opacity-10 text-primary">
+                    <i class="bi bi-film"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Collections -->
+    <div class="col-12 col-sm-6 col-xl-3">
+        <div class="card h-100 p-3 shadow-sm">
+            <div class="d-flex align-items-center justify-content-between">
+                <div>
+                    <span class="text-muted text-uppercase fw-semibold small">Coleções</span>
+                    <h2 class="display-6 fw-bold my-1 text-info">{{ stats.total_collections }}</h2>
+                    <span class="text-muted small">Categorias e séries</span>
+                </div>
+                <div class="stat-icon bg-info bg-opacity-10 text-info">
+                    <i class="bi bi-folder2-open"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Storage -->
+    <div class="col-12 col-sm-6 col-xl-3">
+        <div class="card h-100 p-3 shadow-sm">
+            <div class="d-flex align-items-center justify-content-between">
+                <div>
+                    <span class="text-muted text-uppercase fw-semibold small">Armazenamento</span>
+                    <h2 class="display-6 fw-bold my-1 text-warning">{{ stats.total_bytes_formatted }}</h2>
+                    <span class="text-muted small">Mídia no disco</span>
+                </div>
+                <div class="stat-icon bg-warning bg-opacity-10 text-warning">
+                    <i class="bi bi-hdd-network"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Users -->
+    <div class="col-12 col-sm-6 col-xl-3">
+        <div class="card h-100 p-3 shadow-sm">
+            <div class="d-flex align-items-center justify-content-between">
+                <div>
+                    <span class="text-muted text-uppercase fw-semibold small">Usuários Xtream</span>
+                    <h2 class="display-6 fw-bold my-1 text-success">{{ stats.active_users }} <span class="fs-6 fw-normal text-muted">/ {{ stats.total_users }}</span></h2>
+                    <span class="text-muted small">Contas ativas</span>
+                </div>
+                <div class="stat-icon bg-success bg-opacity-10 text-success">
+                    <i class="bi bi-people"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Secondary Stats & Info -->
+<div class="row g-4">
+    <!-- Largest Collections -->
+    <div class="col-12 col-lg-7">
+        <div class="card h-100 shadow-sm">
+            <div class="card-header bg-transparent d-flex justify-content-between align-items-center py-3">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-bar-chart-line text-primary"></i> Maiores Coleções
+                </h5>
+                <a href="/admin/collections" class="btn btn-sm btn-link text-decoration-none">Ver todas</a>
+            </div>
+            <div class="card-body p-0">
+                {% if stats.largest_collections %}
+                <ul class="list-group list-group-flush">
+                    {% for col in stats.largest_collections %}
+                    <li class="list-group-item bg-transparent d-flex justify-content-between align-items-center py-3 border-secondary-subtle">
+                        <div class="d-flex align-items-center gap-2">
+                            <i class="bi bi-folder-fill text-muted"></i>
+                            <a href="/admin/collections/{{ col.id }}" class="fw-semibold text-decoration-none text-light">
+                                {{ col.name }}
+                            </a>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-secondary bg-opacity-25 text-secondary-emphasis px-3 py-2 rounded-pill">
+                                {{ col.video_count }} vídeos
+                            </span>
+                            <a href="/admin/collections/{{ col.id }}" class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-chevron-right"></i>
+                            </a>
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="p-4 text-center text-muted">
+                    <i class="bi bi-folder-x fs-1 d-block mb-2"></i>
+                    Nenhuma coleção encontrada.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Environment & Covers -->
+    <div class="col-12 col-lg-5">
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-transparent py-3">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-images text-info"></i> Capas de Coleção
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Configuradas:</span>
+                    <span class="fw-bold text-success">{{ stats.configured_covers }}</span>
+                </div>
+                <div class="d-flex justify-content-between mb-3">
+                    <span>Sem Capa:</span>
+                    <span class="fw-bold text-warning">{{ stats.missing_covers }}</span>
+                </div>
+                <div class="progress mb-3" style="height: 8px;">
+                    {% set pct = (stats.configured_covers / (stats.total_collections or 1) * 100)|round|int %}
+                    <div class="progress-bar bg-success" role="progressbar" style="width: {{ pct }}%;" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+                <a href="/admin/collections" class="btn btn-outline-secondary btn-sm w-100">
+                    Gerenciar Capas
+                </a>
+            </div>
+        </div>
+
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent py-3">
+                <h5 class="card-title mb-0 fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-cpu text-warning"></i> Ambiente do Servidor
+                </h5>
+            </div>
+            <div class="card-body small">
+                <div class="mb-2">
+                    <div class="text-muted">Banco de Dados SQLite:</div>
+                    <code class="text-break">{{ stats.db_path }}</code>
+                </div>
+                <div class="mb-2">
+                    <div class="text-muted">Diretório de Cache HLS:</div>
+                    <code class="text-break">{{ stats.cache_path }}</code>
+                </div>
+                <div>
+                    <div class="text-muted">Raiz da Biblioteca:</div>
+                    <code class="text-break">{{ stats.library_root }}</code>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
