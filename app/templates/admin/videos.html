@@ -17,7 +17,7 @@
 
 <!-- Filters Card -->
 <div class="card p-3 mb-4 shadow-sm">
-    <form method="get" action="/admin/videos" class="row g-2 align-items-end">
+    <form hx-get="/admin/videos" hx-target="#videos-container" hx-push-url="true" hx-trigger="submit" class="row g-2 align-items-end">
         <div class="col-12 col-md-4">
             <label class="form-label small text-muted mb-1">Buscar por Título ou Arquivo</label>
             <div class="input-group">
@@ -56,98 +56,8 @@
 </div>
 
 <!-- Videos Table Card -->
-<div class="card shadow-sm">
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead class="table-dark">
-                <tr>
-                    <th style="width: 70px;">ID</th>
-                    <th>Título / Nome do Arquivo</th>
-                    <th>Coleção</th>
-                    <th>Duração</th>
-                    <th>Tamanho</th>
-                    <th>Formato / Codec</th>
-                    <th>Status</th>
-                    <th class="text-end" style="width: 120px;">Ação</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for video in videos %}
-                <tr>
-                    <td class="text-muted">#{{ video.id }}</td>
-                    <td>
-                        <a href="/admin/videos/{{ video.id }}" class="fw-bold text-decoration-none text-light fs-6">
-                            {{ video.title }}
-                        </a>
-                        <div class="text-muted small text-truncate" style="max-width: 320px;">
-                            {{ video.filename }}
-                        </div>
-                    </td>
-                    <td>
-                        {% if video.collection_id %}
-                        <a href="/admin/collections/{{ video.collection_id }}" class="badge bg-secondary-subtle text-secondary-emphasis text-decoration-none">
-                            {{ video.collection_name }}
-                        </a>
-                        {% else %}
-                        <span class="text-muted small">-</span>
-                        {% endif %}
-                    </td>
-                    <td>{{ video.duration_formatted }}</td>
-                    <td>{{ video.size_formatted }}</td>
-                    <td>
-                        <div><code>{{ video.resolution }}</code></div>
-                        <div class="small text-muted">{{ video.video_codec }} / {{ video.audio_codec }}</div>
-                    </td>
-                    <td>
-                        {% if video.active %}
-                        <span class="badge text-bg-success">Ativo</span>
-                        {% else %}
-                        <span class="badge text-bg-secondary">Inativo</span>
-                        {% endif %}
-                    </td>
-                    <td class="text-end">
-                        <a href="/admin/videos/{{ video.id }}" class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1">
-                            <i class="bi bi-play-circle"></i> Detalhes
-                        </a>
-                    </td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="8" class="text-center py-5 text-muted">
-                        <i class="bi bi-film fs-1 d-block mb-2"></i>
-                        Nenhum vídeo encontrado com os filtros selecionados.
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    <!-- Pagination -->
-    {% if total_pages > 1 %}
-    <div class="card-footer bg-transparent py-3">
-        <nav aria-label="Navegação de vídeos">
-            <ul class="pagination pagination-sm justify-content-center mb-0">
-                <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-                    <a class="page-link" href="?q={{ q }}&collection={{ selected_collection or '' }}&status={{ status }}&page={{ page - 1 }}">Anterior</a>
-                </li>
-                {% for p in range(1, total_pages + 1) %}
-                {% if p == page %}
-                <li class="page-item active"><span class="page-link">{{ p }}</span></li>
-                {% elif p <= 3 or p >= total_pages - 2 or (p >= page - 1 and p <= page + 1) %}
-                <li class="page-item">
-                    <a class="page-link" href="?q={{ q }}&collection={{ selected_collection or '' }}&status={{ status }}&page={{ p }}">{{ p }}</a>
-                </li>
-                {% elif p == 4 or p == total_pages - 3 %}
-                <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
-                {% endif %}
-                {% endfor %}
-                <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-                    <a class="page-link" href="?q={{ q }}&collection={{ selected_collection or '' }}&status={{ status }}&page={{ page + 1 }}">Próxima</a>
-                </li>
-            </ul>
-        </nav>
-    </div>
-    {% endif %}
+<!-- Videos Table Card (HTMX Target) -->
+<div class="card shadow-sm" id="videos-container">
+    {% include "admin/partials/_videos_table.html" %}
 </div>
 {% endblock %}
