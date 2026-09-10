@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request, status
+from fastapi import APIRouter, Form, HTTPException, Query, Request, status, Header
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
@@ -75,19 +75,27 @@ def collections(
     request: Request,
     success: str | None = None,
     error: str | None = None,
+    hx_request: str | None = Header(default=None),
 ):
     require_admin(request)
     config = core().CONFIG
     items = admin_service.list_admin_collections(config.db)
+    context = {
+        "collections": items,
+        "active_page": "collections",
+        "success": success,
+        "error": error,
+    }
+    if hx_request:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_collections_table.html",
+            context=context,
+        )
     return templates.TemplateResponse(
         request=request,
         name="admin/collections.html",
-        context={
-            "collections": items,
-            "active_page": "collections",
-            "success": success,
-            "error": error,
-        },
+        context=context,
     )
 
 
@@ -183,6 +191,7 @@ def videos(
     per_page: int = Query(25, ge=1, le=100),
     success: str | None = None,
     error: str | None = None,
+    hx_request: str | None = Header(default=None),
 ):
     require_admin(request)
     config = core().CONFIG
@@ -194,23 +203,32 @@ def videos(
         page=page,
         per_page=per_page,
     )
+    context = {
+        "videos": items,
+        "total_videos": total,
+        "total_pages": total_pages,
+        "collections": collections_list,
+        "q": q,
+        "selected_collection": collection,
+        "status": status_filter,
+        "page": page,
+        "per_page": per_page,
+        "active_page": "videos",
+        "success": success,
+        "error": error,
+    }
+    
+    if hx_request:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_videos_table.html",
+            context=context,
+        )
+        
     return templates.TemplateResponse(
         request=request,
         name="admin/videos.html",
-        context={
-            "videos": items,
-            "total_videos": total,
-            "total_pages": total_pages,
-            "collections": collections_list,
-            "q": q,
-            "selected_collection": collection,
-            "status": status_filter,
-            "page": page,
-            "per_page": per_page,
-            "active_page": "videos",
-            "success": success,
-            "error": error,
-        },
+        context=context,
     )
 
 
@@ -244,19 +262,27 @@ def users(
     request: Request,
     success: str | None = None,
     error: str | None = None,
+    hx_request: str | None = Header(default=None),
 ):
     require_admin(request)
     config = core().CONFIG
     items = admin_service.list_admin_users(config.db)
+    context = {
+        "users": items,
+        "active_page": "users",
+        "success": success,
+        "error": error,
+    }
+    if hx_request:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_users_table.html",
+            context=context,
+        )
     return templates.TemplateResponse(
         request=request,
         name="admin/users.html",
-        context={
-            "users": items,
-            "active_page": "users",
-            "success": success,
-            "error": error,
-        },
+        context=context,
     )
 
 
@@ -330,6 +356,7 @@ async def toggle_user(
     user_id: int,
     action: str,
     request: Request,
+    hx_request: str | None = Header(default=None),
 ):
     require_admin(request)
     if action not in ("enable", "disable"):
@@ -338,12 +365,26 @@ async def toggle_user(
     enable = action == "enable"
     updated = admin_service.set_user_status(config.db, user_id, enable)
     if not updated:
+        if hx_request:
+            items = admin_service.list_admin_users(config.db)
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/partials/_users_table.html",
+                context={"users": items, "error": "Usuário não encontrado."},
+            )
         return RedirectResponse(
             url=f"/admin/users?error={quote('Usuário não encontrado.')}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
     msg = "Usuário habilitado com sucesso!" if enable else "Usuário desativado."
+    if hx_request:
+        items = admin_service.list_admin_users(config.db)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_users_table.html",
+            context={"users": items, "success": msg},
+        )
     return RedirectResponse(
         url=f"/admin/users?success={quote(msg)}",
         status_code=status.HTTP_303_SEE_OTHER,
